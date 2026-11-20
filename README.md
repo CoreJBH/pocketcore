@@ -15,6 +15,10 @@
   <img alt="minSdk 26" src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square">
 </p>
 
+<p align="center">
+  <img src="docs/preview.jpg" width="280" alt="POCKETCORE running Bitcoin Core 32.1 full node on Android">
+</p>
+
 POCKETCORE bundles an actual
 `bitcoind` (Bitcoin Core 32.1) cross-compiled for Android arm64, runs it from the
 app's own native library directory, and talks to it over loopback JSON-RPC.
