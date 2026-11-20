@@ -1,0 +1,7 @@
+<resources>
+    <color name="background">#050912</color>
+    <color name="card">#0B1220</color>
+    <color name="accent">#38BDF8</color>
+    <!-- Field color of the launcher art, used as the adaptive icon background. -->
+    <color name="ic_launcher_background">#010817</color>
+</resources>

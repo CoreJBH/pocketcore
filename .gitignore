@@ -1,0 +1,41 @@
+# Gradle / Android build output
+build/
+.gradle/
+.kotlin/
+captures/
+*.hprof
+local.properties
+.cxx/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Build products: the APK is published as a GitHub Release asset, never committed.
+*.apk
+*.aab
+*.apks
+
+# Daemon cross-build and chain data (raw intermediates never enter the repository)
+build-arm64/
+bitcoin-*/
+boost_*/
+*.tar.gz
+*.tar.bz2
+*.dat
+*.log
+node/
+
+# Keystores and signing material (the release APK is debug-signed)
+*.jks
+*.keystore
+
+# Python tooling
+__pycache__/
+*.pyc
+
+# Tracked on purpose, listed so nobody "fixes" the rules above:
+#   app/src/main/jniLibs/arm64-v8a/libbitcoind.so   the real bitcoind executable
+#   app/src/main/assets/ipv4_country.bin            offline peer country table
+#   gradle/wrapper/gradle-wrapper.jar               Gradle wrapper
