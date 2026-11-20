@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/preview.jpg" width="280" alt="POCKETCORE running Bitcoin Core 32.1 full node on Android">
+  <img src="docs/preview.png" width="280" alt="POCKETCORE running Bitcoin Core 32.1 full node on Android">
 </p>
 
 POCKETCORE bundles an actual
