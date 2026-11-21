@@ -35,7 +35,7 @@ class BitcoindNode(private val context: Context) {
             val cmdline = runCatching {
                 File(entry, "cmdline").readBytes().toString(Charsets.UTF_8)
             }.getOrNull() ?: continue
-            if (!ProcScan.runsBinary(cmdline, NodePaths.BINARY_NAME)) continue
+            if (!ProcScan.runsDaemon(cmdline, NodePaths.BINARY_NAME)) continue
             if (fallback == null) fallback = pid
             val parent = runCatching {
                 File(entry, "status").readLines().firstOrNull { it.startsWith("PPid:") }
@@ -160,7 +160,7 @@ class BitcoindNode(private val context: Context) {
 
     private fun isAlivePid(pid: Int): Boolean = File("/proc/$pid").exists() &&
         runCatching { File("/proc/$pid/cmdline").readBytes().toString(Charsets.UTF_8) }
-            .getOrNull()?.let { ProcScan.runsBinary(it, NodePaths.BINARY_NAME) } == true
+            .getOrNull()?.let { ProcScan.runsDaemon(it, NodePaths.BINARY_NAME) } == true
 
     /** Version reported by the bundled binary, e.g. "v32.1.0". */
     fun version(): String {

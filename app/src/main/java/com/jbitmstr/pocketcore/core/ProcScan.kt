@@ -46,6 +46,18 @@ object ProcScan {
         }
 
     /**
+     * True when a process is the daemon rather than the app's own `-version`
+     * probe of the same binary. A probe is never the thing holding a port, and
+     * killing it would only cost the version line on screen.
+     */
+    fun runsDaemon(cmdline: String, binaryName: String): Boolean =
+        runsBinary(cmdline, binaryName) &&
+            cmdline.split('\u0000').none { it == VERSION_FLAG }
+
+    /** The argument `BitcoindNode.version()` starts the binary with. */
+    const val VERSION_FLAG = "-version"
+
+    /**
      * PIDs under [procRoot] that run [binaryName] as [uid].
      *
      * With [uid] null the UID filter is skipped, which is only useful for tests.
@@ -64,7 +76,7 @@ object ProcScan {
             val pid = entry.name.toIntOrNull() ?: continue
             if (pid in exclude) continue
             val cmdline = readText(File(entry, "cmdline")) ?: continue
-            if (!runsBinary(cmdline, binaryName)) continue
+            if (!runsDaemon(cmdline, binaryName)) continue
             if (uid != null) {
                 val status = readLines(File(entry, "status")) ?: continue
                 if (!runsAs(status, uid)) continue

@@ -47,6 +47,20 @@ class ProcScanTest {
         assertFalse(ProcScan.runsBinary("", binary))
     }
 
+    /**
+     * The app's own `-version` probe runs the same binary; it is not the daemon
+     * and must not be stopped or killed as one.
+     */
+    @Test
+    fun tellsTheDaemonApartFromTheVersionProbe() {
+        val path = "/data/app/com.jbitmstr.pocketcore-1/lib/arm64/libbitcoind.so"
+        val daemon = "$path\u0000-datadir=/data/data/com.jbitmstr.pocketcore/files/node\u0000-conf=/x/bitcoin.conf\u0000"
+        val probe = "$path\u0000-version\u0000-datadir=/data/data/com.jbitmstr.pocketcore/files/node\u0000"
+        assertTrue(ProcScan.runsBinary(probe, binary))
+        assertTrue(ProcScan.runsDaemon(daemon, binary))
+        assertFalse(ProcScan.runsDaemon(probe, binary))
+    }
+
     @Test
     fun listsOnlyThisAppsDaemons() {
         val root = Files.createTempDirectory("procscan").toFile()

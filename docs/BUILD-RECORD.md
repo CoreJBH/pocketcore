@@ -34,13 +34,13 @@ BuildID[sha1]=84b79d173e74bd6768165686da839a6ac66267b2, stripped
 | Version | 1.0.0 (versionCode 9) |
 | minSdk / targetSdk | 26 / 35 |
 | APK | `pocketcore-1.0.0-debug.apk` |
-| APK size | 17,215,853 bytes |
-| APK SHA-256 | `dd58b8b94f2c431db029ea6660da9f089de18ce5869bcdebe7d1412ee239b5e2` |
+| APK size | 17,216,155 bytes |
+| APK SHA-256 | `872b8a6c406574ce15852ce0b1d895ffa08cb4b08f65f9e8f80b153379daabce` |
 | Signing | debug key `f5074815...2aa9c011`, APK Signature Scheme v2 verified, the same key as versionCode 2 to 8 (installs as an update) |
 | Native code in APK | `lib/arm64-v8a/libbitcoind.so`, byte-identical to the stripped daemon (`6becfe26...a8c74f02`) |
 | Offline GeoIP asset | `assets/ipv4_country.bin`, 1,104,026 bytes (559,749 inside the APK), 245 countries, 362,998 ranges |
 | Lint | 0 errors, 16 warnings, 2 information |
-| Unit tests | 92 passing (`NodeModelsTest` 8, `FormatTest` 5, `ExplorerModelsTest` 8, `DescriptorsTest` 7, `RawTransactionTest` 6, `IpCountryIndexTest` 7, `AddressCodecTest` 5, `PortProbeTest` 4, `HeaderSyncTest` 7, `NotificationCardTest` 11, `PortResolverTest` 7, `ProcScanTest` 5, `RpcAuthTest` 4, `VersionProbeTest` 3, `NodeConfigTest` 5) |
+| Unit tests | 93 passing (`NodeModelsTest` 8, `FormatTest` 5, `ExplorerModelsTest` 8, `DescriptorsTest` 7, `RawTransactionTest` 6, `IpCountryIndexTest` 7, `AddressCodecTest` 5, `PortProbeTest` 4, `HeaderSyncTest` 7, `NotificationCardTest` 11, `PortResolverTest` 7, `ProcScanTest` 6, `RpcAuthTest` 4, `VersionProbeTest` 3, `NodeConfigTest` 5) |
 | zipalign | `zipalign -c -p 4` passes |
 
 ### versionCode 9 - the security review: no credentials to a stranger, no credentials on screen
@@ -153,14 +153,16 @@ network-only options sit.
   `pk(...)`, `wpkh(...)`, `tr(...)`, `sh(wpkh(...))` and friends, while an xpub
   that happens to carry a `K` is still accepted (an xpub is not split).
 - `BitcoindNode.killStrayProcesses()` compares the real UID as a token, so another
-  app's daemon is never killed.
+  app's daemon is never killed, and `ProcScan.runsDaemon()` keeps the app's own
+  `-version` probe out of the stray list (it runs the same binary for a moment at
+  launch, and killing it would cost the version line of that launch).
 - `NodeConfig`'s comment no longer claims the ports are passed on the command line
   (they are not: the file's network section is the only place), and `[testnet4]`
   is written correctly in it.
 - EXPLORE placeholders show real shapes: `840000 · 000000000019d668...`,
   `4a5e1e4baab89f3a... (64-char txid)`, `020000000001... (raw signed tx hex)`.
 
-**Tests added** (65 -> 92): `PortResolverTest` (7: the foreign-port bypass is
+**Tests added** (65 -> 93): `PortResolverTest` (7: the foreign-port bypass is
 asserted to send no stop request, our own daemon is stopped on the port the conf
 records, a stop request that is not answered still clears the stray, P2P pairs,
 the RPC/P2P collision branch), `ProcScanTest` (5: exact UID tokens, argv matching,
@@ -173,8 +175,8 @@ plus `DescriptorsTest` and `IpCountryIndexTest` cases for the new checks.
 
 **Build.** versionCode 9, versionName 1.0.0, same debug key
 `f5074815...2aa9c011` as versionCode 2 to 8 (`apksigner` v2 verified),
-17,215,853 bytes, SHA-256
-`dd58b8b94f2c431db029ea6660da9f089de18ce5869bcdebe7d1412ee239b5e2`, 92 unit tests
+17,216,155 bytes, SHA-256
+`872b8a6c406574ce15852ce0b1d895ffa08cb4b08f65f9e8f80b153379daabce`, 93 unit tests
 passing, lint 0 errors / 16 warnings, `zipalign -c -p 4` passing,
 `libbitcoind.so` inside the APK still `6becfe26...a8c74f02`. `docs/preview.png`
 still shows the versionCode 8 NODE tab (stat tiles, RPC card); it is replaced from

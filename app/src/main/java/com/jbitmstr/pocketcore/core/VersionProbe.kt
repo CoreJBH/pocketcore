@@ -15,6 +15,8 @@ import java.io.File
  * first line, which is where Core writes such an error.
  *
  * Pure Kotlin, so the command, the environment and the parsing are unit tested.
+ * The `-version` flag is also what tells the process scan that this process is
+ * not the daemon (see [ProcScan.runsDaemon]).
  */
 object VersionProbe {
 
@@ -25,7 +27,7 @@ object VersionProbe {
 
     fun command(binaryPath: String, dataDir: File): List<String> = listOf(
         binaryPath,
-        "-version",
+        ProcScan.VERSION_FLAG,
         "-datadir=${dataDir.absolutePath}"
     )
 
