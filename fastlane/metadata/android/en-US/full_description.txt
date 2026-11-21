@@ -1,0 +1,72 @@
+POCKETCORE is Bitcoin Core 32.1 running on an Android phone, built from
+source, with no server between you and the chain.
+
+It exists for one reason: to check the chain with cryptography you can read
+instead of trusting a screen someone else drew.
+
+VERIFY, DON'T TRUST
+
+Every block header is hashed twice with SHA-256 and compared against the
+target its own proof of work must meet. The Merkle root inside each header is
+recomputed from the transactions beneath it. A header that fails either check
+never reaches the chain database, so the height on screen is arithmetic, not
+testimony.
+
+Every signature is checked by libsecp256k1, the library Bitcoin Core itself
+links, compiled for this phone's CPU: ECDSA over secp256k1 for the older
+inputs, BIP340 Schnorr signatures for Taproot, inside a script interpreter
+running the current consensus rules. Nothing is reimplemented in Kotlin.
+Nothing is delegated.
+
+Peers speak BIP324. Core's v2 transport is left on, so the session is
+encrypted wherever the other side supports it, and an observer on the network
+reads neither the blocks being relayed nor the transactions being broadcast.
+
+The rest of the local plumbing is the same kind of choice. The JSON-RPC
+endpoint binds to 127.0.0.1 with a random password, and bitcoin.conf stores
+only rpcauth = user:salt$HMAC-SHA256(salt, password) - a hash, never the
+password. The password itself is held by the Android Keystore, AES-256-GCM,
+with a fresh IV per write.
+
+NO KEYS
+
+The daemon is built with the wallet disabled. The only address handling is a
+watch-only descriptor scan: paste an xpub, zpub, ypub or a wpkh(...), tr(...),
+sh(wpkh(...)) descriptor and scantxoutset searches this node's own UTXO set
+for its coins. WIF keys and xprv keys are refused before anything is sent.
+
+WHAT ELSE IT DOES
+
+- Pruned mode: 550 MB, 2 GB or 5 GB, and every kept block is still validated.
+- AssumeUTXO snapshots: reach a recent height quickly, then validate the
+  snapshot back to genesis in the background.
+- Explore: block and transaction lookup, raw transaction broadcast, current
+  difficulty, and the peer list with country flags read from an offline
+  table - no geolocation service is contacted.
+- Mainnet, Signet and Testnet4, each with its own data directory.
+- A foreground service keeps the node validating with the screen off.
+
+WHAT IT DOES NOT DO
+
+No account, no sign-up, no cloud. No telemetry, no analytics, no crash
+reporting, no advertising or attribution SDK, no Google Play Services, no
+third-party block explorer. Nothing leaves the phone except Bitcoin's own
+peer-to-peer traffic.
+
+THE BINARY
+
+bitcoind is Bitcoin Core v32.1, cross-compiled from the official release
+tarball for aarch64-linux-android with NDK r30, stripped, and shipped byte for
+byte. The repository carries the build script, the SHA-256 of the source
+archive, the SHA-256 of the binary and the full build record, so the daemon in
+the APK can be rebuilt and compared. The app is MIT licensed.
+
+REQUIREMENTS
+
+Android 8.0 (API 26) or newer on an arm64 device. Mainnet needs room for the
+chain unless it is pruned; a 550 MB prune target held about 1.2 GB in
+testing. Use Wi-Fi for the first download. The phone gets warm while it
+validates - it is a full node, not a remote view of one.
+
+POCKETCORE is an independent project and is not affiliated with, endorsed by
+or sponsored by the Bitcoin Core project.

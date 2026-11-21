@@ -1,0 +1,10 @@
+# srclibs/bitcoincore.yml - add this file to the fdroiddata MR.
+#
+# fdroiddata keeps one file per source library under srclibs/, named after the
+# library. POCKETCORE's build recipe asks for "bitcoincore@v32.1", and $$bitcoincore$$
+# in its build: line becomes the checkout path of this library.
+#
+# Copy this file to srclibs/bitcoincore.yml in your fork of
+# https://gitlab.com/fdroid/fdroiddata and drop the comment header.
+RepoType: git
+Repo: https://github.com/bitcoin/bitcoin.git

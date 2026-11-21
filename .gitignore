@@ -19,6 +19,7 @@ local.properties
 
 # Daemon cross-build and chain data (raw intermediates never enter the repository)
 build-arm64/
+build-arm64-cache/
 bitcoin-*/
 boost_*/
 *.tar.gz

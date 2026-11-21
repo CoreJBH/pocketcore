@@ -618,6 +618,36 @@ appear on a 360dp-wide phone, and both regenerating tools live in `tools/`
 - Launcher art: `pocketcore-icon-blue1.png` rendered into every mipmap density,
   the adaptive icon foreground and `docs/icon.png` (field color `#010817`).
 
+## Rebuilding the daemon from source
+
+`scripts/build-bitcoind-android.sh` is the whole cross build, written down. It
+takes Bitcoin Core v32.1 from the official `bitcoincore.org` tarball (SHA-256
+`a5f2f61e...7813f9`), Boost 1.86.0 headers from `archives.boost.io` (SHA-256
+`2575e74f...1ca01f`), and NDK r30, configures the same aarch64-linux-android26
+Release build described above with wallet, GUI, IPC, external signer, ZMQ,
+USDT, tests, bench and the `bitcoin`/`bitcoin-cli` executables off, builds
+`bitcoind`, runs `llvm-strip --strip-all` and writes
+`app/src/main/jniLibs/arm64-v8a/libbitcoind.so`.
+
+For a build machine without network, pass the inputs instead of downloading:
+`BITCOIN_SRC=<checkout of v32.1> BOOST_SRC=/usr/include ANDROID_NDK_HOME=<ndk>`.
+That is how the F-Droid recipe calls it (`docs/fdroid/`).
+
+Reproducibility, measured rather than assumed:
+
+- Relinking the object files of the 2026-11-21 build in its own build directory
+  reproduces `bitcoind` exactly: stripped SHA-256
+  `6becfe26...a8c74f02`, 10,729,904 bytes.
+- The same source, NDK and flags built in a different build directory produce a
+  file of the same size that differs in 18 bytes: the 20-byte
+  `.note.gnu.build-id`, which the linker derives from the linked output and the
+  build path inside it. Everything else - the ELF layout, `.text`, `.rodata`,
+  the interpreter and the Android ident note - is identical.
+
+A fresh checkout therefore reproduces the daemon except for that one note; the
+script prints the comparison and only fails on a difference when
+`STRICT_HASH=1` is set.
+
 ## Behavioural verification without a phone
 
 

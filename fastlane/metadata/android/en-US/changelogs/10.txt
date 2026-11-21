@@ -1,0 +1,10 @@
+versionCode 10 - 1.0.0
+
+- Bitcoin Core 32.1 full node that validates blocks on the device.
+- SHA-256d header and proof-of-work checks, libsecp256k1 ECDSA and BIP340
+  Schnorr signature checks, BIP324 v2 encrypted peer transport.
+- Pruned mode (550 MB / 2 GB / 5 GB) and AssumeUTXO snapshots.
+- Watch-only descriptor scan, block and transaction lookup, raw transaction
+  broadcast.
+- Mainnet, Signet and Testnet4.
+- No accounts, no telemetry, no analytics, no Google Play Services.
