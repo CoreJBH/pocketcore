@@ -1,6 +1,6 @@
 Categories:
-  - Wallet
   - Internet
+  - Wallet
 License: MIT
 AuthorName: CoreJBH
 SourceCode: https://github.com/CoreJBH/pocketcore
@@ -16,24 +16,19 @@ Builds:
     versionCode: 10
     commit: 6fafa4a3ad0794a61dc620d0636ccf3997f913c0
     timeout: 14400
-    ndk: 30.0.16248370
     sudo:
       - apt-get update
       - apt-get install -y --no-install-recommends libboost-dev
+    gradle:
+      - yes
+    output: app/build/outputs/apk/release/app-release-unsigned.apk
     srclibs:
       - bitcoincore@v32.1
     rm:
       - app/src/main/jniLibs/arm64-v8a/libbitcoind.so
-    build:
-      - ANDROID_NDK_HOME=$$NDK$$ BITCOIN_SRC=$$bitcoincore$$ BOOST_SRC=/usr/include ./scripts/build-bitcoind-android.sh
-    gradle:
-      - yes
-    output: app/build/outputs/apk/release/app-release-unsigned.apk
-
-AutoUpdateMode: None
-UpdateCheckMode: Tags
-CurrentVersion: 1.0.0
-CurrentVersionCode: 10
+    build: ANDROID_NDK_HOME=$$NDK$$ BITCOIN_SRC=$$bitcoincore$$ BOOST_SRC=/usr/include
+      ./scripts/build-bitcoind-android.sh
+    ndk: 30.0.16248370
 
 MaintainerNotes: |
   The apk is an ordinary Gradle build; the only unusual part is the daemon.
@@ -89,3 +84,8 @@ MaintainerNotes: |
 
   The release keystore is not in the repository and is not needed: the gradle
   build leaves the release APK unsigned when keystore/ is absent.
+
+AutoUpdateMode: None
+UpdateCheckMode: Tags
+CurrentVersion: 1.0.0
+CurrentVersionCode: 10
