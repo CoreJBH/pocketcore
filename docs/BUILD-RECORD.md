@@ -76,17 +76,24 @@ over 620 ms (`LinearOutSlowInEasing`), holds still, and the overlay fades out ov
 260 ms - the same 1.1 s in total, without anything moving under the eye after the
 entrance.
 
-**README signboard, redrawn.** `docs/hero-splash.png` is now a compact 900 x 760
+**README signboard, redrawn.** `docs/hero-splash.png` is now a compact 760 x 540
 RGBA card instead of a 1600 x 860 rectangle: `#050912` fill, 32px rounded
 corners, a `#1E293B` hairline, and a transparent surround, so GitHub's dark
-(`#0d1117`) and light (`#ffffff`) themes both show a deliberate shape rather than
-a black rectangle floating on the page. The tile, `POCKETCORE` and the one-line
-description are drawn on their own layer, measured with `getbbox()`, and centred
-- together with the halo's reach, which is what the eye balances - in the card,
-so the stack sits in the middle on both axes. The halo is drawn one notch
-quieter (peak alpha 0.19) and reaches 0.86 x the tile box, so it dies well inside
-the card. `README.md` shows it at `width="380"` so it fills a phone screen and a
-desktop column alike.
+(`#0d1117`) and light (`#ffffff`) themes both show a deliberate shape rather than,
+as the first attempt did, a black rectangle floating on the page. The card was
+first drawn at 900 x 760, which left a wide empty band above the tile and below
+the description because the layout was measured from `getbbox()` of a layer that
+still held the halo, so the faintest glow pixels set the bounds; the card is now
+sized from the artwork alone. The tile, `POCKETCORE` and the one-line
+description are drawn on their own layer and centred in the card by their
+visible footprint - alpha above the field's own noise, so neither the rounded
+corners' near-transparent pixels nor the glow can shift the stack - leaving 156
+px left and right and 52 px above the tile's top edge and below the description's
+baseline. The halo is drawn afterwards, one notch quieter (peak alpha 0.19), with
+its own steeper curve spread over 0.97 of the clear space from the tile's centre
+to the nearest card edge, so it still reads beside the tile and reaches zero
+strictly inside the card instead of being cut by the edge. `README.md` shows it
+at `width="380"` so it fills a phone screen and a desktop column alike.
 
 **README text.** The body now leads with what the phone verifies rather than with
 the UI: a table of SHA-256d, proof of work, `libsecp256k1` (ECDSA and BIP340

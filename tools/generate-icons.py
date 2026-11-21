@@ -59,8 +59,7 @@ TILE_RADIUS = SPLASH_RADIUS_DP / SPLASH_BOX_DP
 HALO_RADIUS_DP = 150.0
 HALO_COLOUR = (0x38, 0xBD, 0xF8)
 HALO_PEAK = 0.20
-# Shape of that gradient, normalised to the alpha at the tile's centre. The
-# banner scales it down (see BANNER_HALO_PEAK) instead of using another curve.
+# Shape of that gradient, normalised to the alpha at the tile's centre.
 HALO_SHAPE = (
     (0.00, 1.000),
     (0.30, 0.875),
@@ -70,11 +69,22 @@ HALO_SHAPE = (
     (1.00, 0.000),
 )
 BANNER_HALO_PEAK = 0.19     # the signboard's halo, one notch quieter
-BANNER_HALO_REACH = 0.86    # of the banner tile's box, so it dies inside the card
-# The README signboard: a compact, centred card rather than a wide banner, so it
-# fills a phone screen and a desktop column without empty side margins.
-CARD_RADIUS = 32            # px at 900 x 760
-HERO_BOX_PX = 320           # tile edge in the 900-wide frame
+# The banner has far less clear space around the tile than the launch screen, so
+# its glow needs its own curve: it stays readable just outside the tile and still
+# reaches zero strictly inside the card, instead of being cut by the card edge.
+BANNER_HALO_SHAPE = (
+    (0.00, 0.900),
+    (0.50, 0.800),
+    (0.72, 0.550),
+    (0.86, 0.240),
+    (1.00, 0.000),
+)
+BANNER_HALO_FILL = 0.97     # of the clear space from the tile centre to the nearest edge
+# The README signboard: a compact, centred card whose padding is measured from the
+# artwork, so no empty band is left above the tile or below the description.
+CARD_RADIUS = 32            # px at the card's final size
+HERO_CARD_PX = (760, 540)   # the card, before the 2x supersample
+HERO_BOX_PX = 320           # tile edge
 HERO_NAME_PX = 50           # POCKETCORE, semibold
 HERO_SUB_PX = 22            # the one-line description
 HERO_TRACK_PX = 11          # POCKETCORE's letter spacing
@@ -219,17 +229,23 @@ def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(f"/usr/share/fonts/truetype/liberation/{name}", size)
 
 
-def halo_alpha(t, peak: float = HALO_PEAK):
-    """Alpha of the launch-screen halo at `t` (0 at the centre, 1 at its reach)."""
-    return peak * np.interp(t, [stop for stop, _ in HALO_SHAPE], [value for _, value in HALO_SHAPE])
+def halo_alpha(t, peak: float = HALO_PEAK, shape=HALO_SHAPE):
+    """Alpha of the halo at `t` (0 at the centre, 1 at its reach)."""
+    return peak * np.interp(t, [stop for stop, _ in shape], [value for _, value in shape])
 
 
-def halo(canvas: Image.Image, centre: tuple[float, float], radius: float, peak: float = HALO_PEAK) -> Image.Image:
+def halo(
+    canvas: Image.Image,
+    centre: tuple[float, float],
+    radius: float,
+    peak: float = HALO_PEAK,
+    shape=HALO_SHAPE,
+) -> Image.Image:
     """The launch screen's cyan halo, composited onto an RGB or RGBA canvas."""
     width, height = canvas.size
     yy, xx = np.mgrid[0:height, 0:width]
     t = np.clip(np.hypot(xx - centre[0], yy - centre[1]) / radius, 0.0, 1.0)
-    alpha = halo_alpha(t, peak)
+    alpha = halo_alpha(t, peak, shape)
     base = np.asarray(canvas).astype(np.float32)
     colour = np.array(HALO_COLOUR, dtype=np.float32)
     out = base.copy()
@@ -276,6 +292,15 @@ def tracked_text(
         x += width + spacing
 
 
+def visible_bbox(layer: Image.Image) -> tuple[int, int, int, int]:
+    """Bounding box of what the eye sees: alpha above the field's own noise."""
+    alpha = np.asarray(layer)[:, :, 3].astype(np.float32) / 255.0
+    ys, xs = np.nonzero(alpha > ALPHA_FLOOR)
+    if len(xs) == 0:
+        return 0, 0, 0, 0
+    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+
 def hero_banner(tile: Image.Image) -> Image.Image:
     """The README signboard: the launch-screen composition on a compact card.
 
@@ -285,17 +310,20 @@ def hero_banner(tile: Image.Image) -> Image.Image:
     surround. GitHub renders the README over #0d1117 in dark mode and #ffffff in
     light mode; an opaque black rectangle shows its own edges against both, while
     a card is a deliberate shape that the page colour simply passes around, and
-    the white name stays legible on it in either theme. The halo is one notch
-    quieter and dies well inside the card.
+    the white name stays legible on it in either theme.
 
-    The tile and the two lines are drawn first on their own layer, measured, and
-    only then centred in the card, so the stack sits on the card's middle on both
-    axes whatever the fonts' ascender and descender boxes turn out to be.
+    The card is a fixed, compact size and the tile plus the two lines are drawn
+    on their own layer, measured, and centred in it by that measurement, so the
+    band above the tile's top edge is the same as the band below the description
+    and both side bands match. Only the artwork's visible footprint is measured:
+    the halo is drawn afterwards and is not allowed to shift the stack, and
+    neither are the near-transparent pixels along the tile's rounded corners,
+    which under ALPHA_FLOOR do not count as something the eye can see.
 
     Rendered at twice the final size and reduced with LANCZOS so the type stays
     crisp at GitHub's line width.
     """
-    width, height = 900, 760
+    width, height = HERO_CARD_PX
     supersample = 2
     shape = (width * supersample, height * supersample)
     centre_x = shape[0] / 2.0
@@ -306,14 +334,15 @@ def hero_banner(tile: Image.Image) -> Image.Image:
     name_font = font(HERO_NAME_PX * supersample, bold=True)
     sub_font = font(HERO_SUB_PX * supersample)
 
-    # Pass 1: the stack on its own transparent layer, at any position.
+    # Pass 1: the tile and the two lines on their own transparent layer, at any
+    # position, with the tile's top edge on the layer's top edge.
     stack = Image.new("RGBA", shape, (0, 0, 0, 0))
     stack.alpha_composite(
         tile.resize((box, box), Image.LANCZOS),
-        (int(round(centre_x - box / 2)), supersample),
+        (int(round(centre_x - box / 2)), 0),
     )
     draw = ImageDraw.Draw(stack, "RGBA")
-    name_top = supersample + box + gap_tile
+    name_top = box + gap_tile
     tracked_text(
         draw, centre_x, name_top, "POCKETCORE",
         name_font, HERO_TRACK_PX * supersample, (255, 255, 255, 255),
@@ -323,20 +352,21 @@ def hero_banner(tile: Image.Image) -> Image.Image:
         "Your mobile Bitcoin full node",
         sub_font, 1.2 * supersample, (0x94, 0xA3, 0xB8, 255),
     )
-    left, top, right, bottom = stack.getbbox()
-    offset_x = int(round(centre_x - (left + right) / 2.0))
-    offset_y = int(round((shape[1] - (bottom - top)) / 2.0 - top))
 
-    # The halo is part of what the eye balances, and it reaches well above the
-    # tile: centre the union of the glow and the stack rather than the stack
-    # alone, or the whole composition reads as sitting high on the card.
-    reach = BANNER_HALO_REACH * box
-    tile_centre_y = supersample + box / 2.0 + offset_y
-    union_top = min(top + offset_y, tile_centre_y - reach)
-    union_bottom = max(bottom + offset_y, tile_centre_y + reach)
-    offset_y += int(round(shape[1] / 2.0 - (union_top + union_bottom) / 2.0))
+    # Pass 2: centre that measured block on the card, on both axes.
+    left, top, right, bottom = visible_bbox(stack)
+    content_w, content_h = right - left, bottom - top
+    if content_w > shape[0] or content_h > shape[1]:
+        raise SystemExit(f"hero banner content {content_w} x {content_h} does not fit {shape}")
+    offset_x = int(round((shape[0] - (left + right)) / 2.0))
+    offset_y = int(round((shape[1] - (top + bottom)) / 2.0))
     stack = stack.transform(
         shape, Image.AFFINE, (1, 0, -offset_x, 0, 1, -offset_y), resample=Image.BICUBIC
+    )
+    print(
+        f"hero banner: content {content_w // supersample} x {content_h // supersample} px "
+        f"on a {width} x {height} card, padding "
+        f"{(shape[0] - content_w) // (2 * supersample)} x {(shape[1] - content_h) // (2 * supersample)} px"
     )
 
     # The card, with its own rounded corners cut out of the canvas.
@@ -347,9 +377,17 @@ def hero_banner(tile: Image.Image) -> Image.Image:
     )
     card.putalpha(mask)
 
-    # The halo, centred on the tile as it now sits.
-    tile_centre = (centre_x, supersample + box / 2.0 + offset_y)
-    card = halo(card, tile_centre, BANNER_HALO_REACH * box, BANNER_HALO_PEAK)
+    # The halo, centred on the tile as it now sits, sized to the clear space the
+    # card actually leaves so its gradient reaches zero inside the card instead
+    # of being clipped by the edge.
+    tile_centre = (centre_x + offset_x, box / 2.0 + offset_y)
+    clear = min(
+        tile_centre[0], shape[0] - tile_centre[0],
+        tile_centre[1], shape[1] - tile_centre[1],
+    )
+    card = halo(
+        card, tile_centre, BANNER_HALO_FILL * clear, BANNER_HALO_PEAK, BANNER_HALO_SHAPE
+    )
 
     # A hairline inside the card edge so the panel reads against a dark page too.
     ImageDraw.Draw(card).rounded_rectangle(
