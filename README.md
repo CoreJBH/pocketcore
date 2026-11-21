@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/icon.png" width="130" alt="POCKETCORE icon: an isometric cyan tesseract with a glowing blue core, on deep navy">
+  <img src="docs/logo.png" width="150" alt="POCKETCORE logo: an isometric cyan tesseract with a glowing blue core, on deep navy">
 </p>
 
 <h1 align="center">POCKETCORE</h1>
@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/preview.png" width="280" alt="POCKETCORE running Bitcoin Core 32.1 full node on Android">
+  <img src="docs/preview.png" width="300" alt="POCKETCORE running Bitcoin Core 32.1 full node on Android">
 </p>
 
 POCKETCORE bundles an actual
@@ -33,6 +33,31 @@ debug-signed, so installing a newer build over it requires removing the previous
 one first.
 
 ---
+
+## Screens
+
+Every figure on these screens is an RPC answer from the phone's own node.
+
+<table>
+  <tr>
+    <td align="center" width="25%"><img src="docs/preview.png" width="180" alt="NODE tab: block height 602,526 of 976,838 headers, 31.79% verifying blocks, 8 peers, local JSON-RPC online on port 8332"></td>
+    <td align="center" width="25%"><img src="docs/screen-sync.png" width="180" alt="SYNC tab: validated chainstate at 31.76%, AssumeUTXO snapshot picker and pruned storage figures"></td>
+    <td align="center" width="25%"><img src="docs/screen-explore.png" width="180" alt="EXPLORE tab: chain status with the best block, block lookup and transaction lookup against this phone's own node"></td>
+    <td align="center" width="25%"><img src="docs/screen-settings.png" width="180" alt="SETTINGS tab: network selector, watch-only descriptor field, prune size and data directory paths"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>NODE</b></sub></td>
+    <td align="center"><sub><b>SYNC</b></sub></td>
+    <td align="center"><sub><b>EXPLORE</b></sub></td>
+    <td align="center"><sub><b>SETTINGS</b></sub></td>
+  </tr>
+  <tr>
+    <td align="center" colspan="4"><img src="docs/screen-notification.png" width="620" alt="POCKETCORE status card in the notification shade: 31.64% - Block #601,537 Syncing, with a progress bar"></td>
+  </tr>
+  <tr>
+    <td align="center" colspan="4"><sub>The colorized foreground-service status card while the chain downloads</sub></td>
+  </tr>
+</table>
 
 ## What it does
 
@@ -148,7 +173,7 @@ app/src/main/java/com/jbitmstr/pocketcore/
   ui/SplashScreen.kt           midnight-blue animated launch overlay
 app/src/main/jniLibs/arm64-v8a/libbitcoind.so   the real Bitcoin Core daemon
 app/src/main/assets/ipv4_country.bin            offline IPv4 -> country ranges
-tools/                         icon, GeoIP asset and RPC verification scripts
+tools/                         icon, screenshot, GeoIP asset and RPC verification scripts
 verify-english.py              fails if any non-English text enters the repo
 ```
 
