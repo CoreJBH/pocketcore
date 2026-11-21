@@ -12,6 +12,10 @@ android {
         applicationId = "com.jbitmstr.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 7: launch screen enlarged - the splash tile draws the
+        // tesseract at 73% instead of 48.6% and the 96dp box became 120dp, so
+        // the mark reads at 88dp on a 360dp phone instead of 47dp. Launcher
+        // icons unchanged; docs/hero-splash.png is the README signboard.
         // versionCode 6: launcher, themed-icon, splash and notification art
         // redrawn from pocketcore-icon-tesseract2.png - the isometric tesseract
         // with a glowing core, nothing else inside. The adaptive foreground is
@@ -28,7 +32,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 6
+        versionCode = 7
         versionName = "1.0.0"
 
         ndk {

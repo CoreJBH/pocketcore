@@ -1,6 +1,6 @@
 # Build record
 
-Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 6).
+Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 7).
 
 ## Daemon
 
@@ -31,17 +31,60 @@ BuildID[sha1]=84b79d173e74bd6768165686da839a6ac66267b2, stripped
 | Item | Value |
 | --- | --- |
 | Package | `com.jbitmstr.pocketcore` |
-| Version | 1.0.0 (versionCode 6) |
+| Version | 1.0.0 (versionCode 7) |
 | minSdk / targetSdk | 26 / 35 |
 | APK | `pocketcore-1.0.0-debug.apk` |
-| APK size | 16,904,831 bytes |
-| APK SHA-256 | `9e5872dd92d3568be9f45f70df6b54fc7679abbda529950bdbd21e7383812704` |
-| Signing | debug key `f5074815...2aa9c011`, APK Signature Scheme v2 verified, the same key as versionCode 2 to 5 (installs as an update) |
+| APK size | 17,060,531 bytes |
+| APK SHA-256 | `dd44e23b09a81cfc0690c1f9603b52c5c28c7d7c5203520719cb93adf33ec23c` |
+| Signing | debug key `f5074815...2aa9c011`, APK Signature Scheme v2 verified, the same key as versionCode 2 to 6 (installs as an update) |
 | Native code in APK | `lib/arm64-v8a/libbitcoind.so`, byte-identical to the stripped daemon (`6becfe26...a8c74f02`) |
 | Offline GeoIP asset | `assets/ipv4_country.bin`, 1,104,026 bytes (559,749 inside the APK), 245 countries, 362,998 ranges |
 | Lint | 0 errors, 16 warnings, 2 information |
 | Unit tests | 65 passing (`NodeModelsTest`, `FormatTest`, `ExplorerModelsTest`, `DescriptorsTest`, `RawTransactionTest`, `IpCountryIndexTest`, `AddressCodecTest`, `PortProbeTest`, `HeaderSyncTest`, `NotificationCardTest`) |
 | zipalign | `zipalign -c -p 4` passes |
+
+### versionCode 7 - a larger launch screen and the README signboard
+
+Reported from the phone: the launch screen's tile carried so much inner padding
+that the tesseract looked small inside it. The mark was 48.6% of the tile, and
+the tile itself was drawn in a 96dp box, so on a 360dp-wide phone the mark read
+at about 47dp.
+
+**Tile.** `tools/generate-icons.py` now has a separate launch-screen geometry
+from the launcher icon. `splash_icon.png` is 768 px (was 512) and draws the mark
+at **72.9%** of the tile instead of 48.6%: in the file the mark measures
+610 x 560 px at 149, 105 - 619, 664, i.e. 61.3% wide, 72.9% tall, with a 13.5%
+margin to every edge. The corner radius is 32/120, still the ratio
+`SplashScreen.kt` clips with, and the tile is 3x the 480 px a 120dp box needs at
+xxxhdpi so the enlarged mark stays sharp. The launcher icons (`ic_launcher_*`),
+the themed-icon layer and `docs/icon.png` are unchanged: they keep the 50%-of-
+canvas safe-zone geometry from versionCode 6, and the regenerate run reproduced
+them byte for byte.
+
+**Splash.** `ui/SplashScreen.kt` draws the tile in a 120dp box (was 96dp) and
+clips it at `RoundedCornerShape(32.dp)` (was 26dp). Together with the tile change
+the mark goes from ~47dp to ~88dp on a 360dp phone; the cyan halo keeps its
+0.82 x box radius and 0.22 alpha, so it grows with the tile instead of turning
+into a ring. Nothing else on the launch screen moved: same 1.1 s hold, same fade
+and pulse, POCKETCORE at 24sp with 5sp tracking, the one-line description below.
+`docs/splash-preview.png` is redrawn at the new size (360dp x 780dp, 3x).
+
+**README signboard.** `docs/hero-splash.png` (1600 x 860) is the launch-screen
+composition drawn wide: the halo, the enlarged tile, POCKETCORE and
+`Your mobile Bitcoin full node` on the `#050912` canvas, rendered at 2x and
+reduced with LANCZOS by `hero_banner()` in the same generator, so the signboard
+is reproducible from the artwork rather than a one-off export. `README.md` opens
+with it in place of the small logo and the duplicated phone screenshot;
+`docs/preview.png` stays in the Screens table next to SYNC, EXPLORE and SETTINGS,
+with the notification card below them.
+
+**Build.** versionCode 7, versionName 1.0.0, same debug key as versionCode 2 to 6
+(v2 scheme verified with `apksigner verify`, certificate
+`f5074815...2aa9c011`), 65 unit tests passing, lint
+0 errors / 16 warnings, `zipalign -c -p 4` passing. The APK grew from 16,904,831
+to 17,060,531 bytes, all of it the larger, less compressible splash tile;
+`libbitcoind.so` inside the APK is still `6becfe26...a8c74f02`, and the
+`splash_icon.png` in the APK is byte-identical to the file in `res/`.
 
 ### versionCode 6 - tesseract launcher icon
 

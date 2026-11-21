@@ -118,7 +118,9 @@ private fun SplashOverlay(onFinished: () -> Unit) {
         ) {
             Box(
                 modifier = Modifier
-                    .size(96.dp)
+                    // 120dp puts the mark at 88dp on a 360dp-wide phone; the
+                    // raster tile's own mark fills 73% of the box.
+                    .size(120.dp)
                     .graphicsLayer {
                         val s = enter.value * pulseScale
                         scaleX = s
@@ -148,7 +150,9 @@ private fun SplashOverlay(onFinished: () -> Unit) {
                     contentDescription = null,
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(26.dp))
+                        // Matches the radius baked into splash_icon.png, so the
+                        // raster edge and the Compose clip land on the same curve.
+                        .clip(RoundedCornerShape(32.dp))
                 )
             }
             Spacer(Modifier.height(26.dp))

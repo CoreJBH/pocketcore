@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="docs/logo.png" width="150" alt="POCKETCORE logo: an isometric cyan tesseract with a glowing blue core, on deep navy">
+  <img src="docs/hero-splash.png" width="900" alt="The POCKETCORE launch screen: a large cyan isometric tesseract with a glowing blue core on a deep navy tile, the name POCKETCORE and the line Your mobile Bitcoin full node">
 </p>
-
-<h1 align="center">POCKETCORE</h1>
 
 <p align="center"><b>A real Bitcoin Core full node in your pocket. No wallet, no accounts, no servers, no fake node.</b></p>
 
@@ -13,10 +11,6 @@
   <img alt="Jetpack Compose" src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285f4?style=flat-square">
   <img alt="ABI arm64-v8a" src="https://img.shields.io/badge/ABI-arm64--v8a-38bdf8?style=flat-square">
   <img alt="minSdk 26" src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square">
-</p>
-
-<p align="center">
-  <img src="docs/preview.png" width="300" alt="POCKETCORE running Bitcoin Core 32.1 full node on Android">
 </p>
 
 POCKETCORE bundles an actual

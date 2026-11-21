@@ -29,6 +29,7 @@ Outputs:
     docs/icon.png                                          documentation preview
     docs/monochrome-preview.png                            themed-icon preview
     docs/splash-preview.png                                launch-screen preview
+    docs/hero-splash.png                                   README hero banner
 """
 
 from pathlib import Path
@@ -42,8 +43,15 @@ RES = ROOT / "app" / "src" / "main" / "res"
 
 FIELD = (3, 11, 39)         # #030B27, the artwork field and the icon background
 MARK_HEIGHT = 0.50          # share of the 108dp canvas covered by the mark
-MARK_IN_TILE = 0.4856       # the mark is 609px of the 1254px artwork tile
-TILE_RADIUS = 26 / 96       # matches RoundedCornerShape(26.dp) on the 96dp splash box
+MARK_IN_TILE = 0.4856       # launcher proportions, kept for docs/icon.png
+# The launch-screen tile is not bound by an adaptive-icon mask, so the mark can
+# fill it: 73% of the tile leaves a 13.5% margin on every side (the artwork's
+# own bloom included) and makes the tesseract read at arm's length.
+SPLASH_MARK_IN_TILE = 0.73
+SPLASH_TILE_PX = 768        # 120dp at 4x is 480px; 768 keeps the mark sharp
+SPLASH_BOX_DP = 120         # SplashScreen.kt draws the tile in a 120dp box
+SPLASH_RADIUS_DP = 32       # RoundedCornerShape(32.dp) on that box
+TILE_RADIUS = SPLASH_RADIUS_DP / SPLASH_BOX_DP
 ALPHA_FLOOR = 0.012         # the field has +-1 noise; ignore what is below this
 
 # density: (canvas scale, alpha gamma). The tesseract's lines are ~1.5dp wide,
@@ -163,14 +171,20 @@ def monochrome(layer: Image.Image, mark_ratio: float, canvas_size: int) -> Image
     return canvas
 
 
-def splash_tile(layer: Image.Image, mark_ratio: float, size: int = 512) -> Image.Image:
+def splash_tile(
+    layer: Image.Image,
+    mark_ratio: float,
+    size: int = SPLASH_TILE_PX,
+    mark_in_tile: float = SPLASH_MARK_IN_TILE,
+    radius_ratio: float = TILE_RADIUS,
+) -> Image.Image:
     """The launch-screen tile: field-coloured rounded square with the mark."""
     tile = Image.new("RGBA", (size, size), FIELD + (255,))
-    side = max(1, int(round(size * MARK_IN_TILE / mark_ratio)))
+    side = max(1, int(round(size * mark_in_tile / mark_ratio)))
     scaled = layer.resize((side, side), Image.LANCZOS)
     offset = (size - side) // 2
     tile.paste(scaled, (offset, offset), scaled)
-    tile.putalpha(rounded_mask(size, TILE_RADIUS))
+    tile.putalpha(rounded_mask(size, radius_ratio))
     return tile
 
 
@@ -185,7 +199,7 @@ def splash_preview(tile: Image.Image) -> Image.Image:
     width, height = int(360 * scale), int(780 * scale)
     canvas = Image.new("RGB", (width, height), (0x05, 0x09, 0x12))
     draw = ImageDraw.Draw(canvas, "RGBA")
-    box = int(96 * scale)
+    box = int(SPLASH_BOX_DP * scale)
     x0 = (width - box) // 2
     y0 = int(height * 0.42) - box // 2
     cx, cy = x0 + box / 2, y0 + box / 2
@@ -201,6 +215,63 @@ def splash_preview(tile: Image.Image) -> Image.Image:
     draw.text((cx, y0 + box + 56 * scale), "Your mobile Bitcoin full node", font=font(int(12 * scale)),
               fill=(0x94, 0xA3, 0xB8), anchor="ma")
     return canvas
+
+
+def tracked_text(
+    draw: ImageDraw.ImageDraw,
+    centre_x: float,
+    top: float,
+    text: str,
+    typeface: ImageFont.FreeTypeFont,
+    spacing: float,
+    fill,
+) -> None:
+    """Draw text centred on centre_x with extra tracking, as Compose's letterSpacing does."""
+    widths = [draw.textlength(character, font=typeface) for character in text]
+    total = sum(widths) + spacing * (len(text) - 1)
+    x = centre_x - total / 2.0
+    for character, width in zip(text, widths):
+        draw.text((x, top), character, font=typeface, fill=fill)
+        x += width + spacing
+
+
+def hero_banner(tile: Image.Image) -> Image.Image:
+    """The README signboard: the launch-screen composition, drawn wide.
+
+    Same pieces as SplashScreen.kt and in the same order - the cyan halo, the
+    enlarged tesseract tile, POCKETCORE with its letter spacing, and the one-line
+    description - on the app's #050912 canvas. Rendered at twice the final size
+    and reduced with LANCZOS so the type stays crisp at GitHub's line width.
+    """
+    width, height = 1600, 860
+    supersample = 2
+    canvas = Image.new("RGB", (width * supersample, height * supersample), (0x05, 0x09, 0x12))
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    centre_x = canvas.width / 2.0
+
+    box = 400 * supersample
+    top = 110 * supersample
+    centre_y = top + box / 2.0
+    # The halo SplashScreen draws behind the tile, scaled with the box.
+    radius = int(box * 0.82)
+    for step in range(radius, 0, -1):
+        alpha = int(0.22 * 255 * (1 - step / radius) ** 2)
+        draw.ellipse(
+            (centre_x - step, centre_y - step, centre_x + step, centre_y + step),
+            fill=(0x38, 0xBD, 0xF8, alpha),
+        )
+    scaled = tile.resize((box, box), Image.LANCZOS)
+    canvas.paste(scaled, (int(round(centre_x - box / 2)), top), scaled)
+
+    tracked_text(
+        draw, centre_x, top + box + 66 * supersample, "POCKETCORE",
+        font(84 * supersample, bold=True), 22 * supersample, (255, 255, 255),
+    )
+    tracked_text(
+        draw, centre_x, top + box + 186 * supersample, "Your mobile Bitcoin full node",
+        font(30 * supersample), 1.5 * supersample, (0x94, 0xA3, 0xB8),
+    )
+    return canvas.resize((width, height), Image.LANCZOS)
 
 
 def monochrome_preview(mono: Image.Image) -> Image.Image:
@@ -263,9 +334,14 @@ def main() -> None:
             mono.save(nodpi / "ic_launcher_monochrome.png", optimize=True)
             tile = splash_tile(density_layer, mark_ratio)
             tile.save(nodpi / "splash_icon.png", optimize=True)
-            tile.save(ROOT / "docs" / "icon.png", optimize=True)
+            # docs/icon.png keeps the launcher proportions: it documents the app
+            # icon, not the launch tile.
+            splash_tile(
+                density_layer, mark_ratio, size=512, mark_in_tile=MARK_IN_TILE, radius_ratio=26 / 96
+            ).save(ROOT / "docs" / "icon.png", optimize=True)
             monochrome_preview(mono).save(ROOT / "docs" / "monochrome-preview.png", optimize=True)
             splash_preview(tile).save(ROOT / "docs" / "splash-preview.png", optimize=True)
+            hero_banner(tile).save(ROOT / "docs" / "hero-splash.png", optimize=True)
 
 
 if __name__ == "__main__":
