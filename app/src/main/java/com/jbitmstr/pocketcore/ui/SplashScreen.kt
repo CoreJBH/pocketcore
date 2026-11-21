@@ -124,15 +124,17 @@ private fun SplashOverlay(onFinished: () -> Unit) {
             .drawBehind {
                 // A radial gradient on the window-sized node: its own layer is
                 // the screen, so the falloff cannot be cut by a smaller box.
-                val overlay = overlayCoordinates ?: return@drawBehind
-                val tile = tileCoordinates ?: return@drawBehind
                 val fade = alpha.value
                 if (fade <= 0.001f) return@drawBehind
-                if (!overlay.isAttached || !tile.isAttached) return@drawBehind
-                val centre = overlay.localPositionOf(
-                    tile,
-                    Offset(tile.size.width / 2f, tile.size.height / 2f)
-                )
+                val overlay = overlayCoordinates
+                val tile = tileCoordinates
+                val centre = if (overlay != null && tile != null && overlay.isAttached && tile.isAttached) {
+                    overlay.localPositionOf(tile, Offset(tile.size.width / 2f, tile.size.height / 2f))
+                } else {
+                    // Before the first placement has been reported: keep the
+                    // halo on the window's centre rather than losing it.
+                    center
+                }
                 val radius = GlowRadius.toPx()
                 drawCircle(
                     brush = Brush.radialGradient(

@@ -35,7 +35,7 @@ BuildID[sha1]=84b79d173e74bd6768165686da839a6ac66267b2, stripped
 | minSdk / targetSdk | 26 / 35 |
 | APK | `pocketcore-1.0.0-debug.apk` |
 | APK size | 17,061,607 bytes |
-| APK SHA-256 | `3187613abdae43b23d9ee3e2eb06c54ec32413f17fbf11e05fd0619e62dc7f96` |
+| APK SHA-256 | `da080f626091983f34f3b3bfb3e02039b0ea9e44d9e47904ee02d0a18bd2bffc` |
 | Signing | debug key `f5074815...2aa9c011`, APK Signature Scheme v2 verified, the same key as versionCode 2 to 7 (installs as an update) |
 | Native code in APK | `lib/arm64-v8a/libbitcoind.so`, byte-identical to the stripped daemon (`6becfe26...a8c74f02`) |
 | Offline GeoIP asset | `assets/ipv4_country.bin`, 1,104,026 bytes (559,749 inside the APK), 245 countries, 362,998 ranges |
@@ -61,7 +61,9 @@ the halo is wider than the tile but its top and bottom are straight.)
 `Box` - the full-window node whose layer *is* the screen - draws one
 `Brush.radialGradient` centred on the tile, with the tile's centre resolved in
 the draw phase from `LayoutCoordinates` (`overlay.localPositionOf(tile, ...)`,
-so the callback order between child and parent cannot matter). The gradient
+so the callback order between child and parent cannot matter; until the first
+placement has been reported the halo falls back to the window's centre rather
+than disappearing). The gradient
 reaches full transparency 150dp from the centre, 90dp clear of the tile's edge,
 and its stops are 0.20 / 0.175 / 0.108 / 0.046 / 0.012 / 0 at 0.00 / 0.30 /
 0.46 / 0.62 / 0.82 / 1.00. Its alphas are multiplied by the overlay's current
@@ -103,7 +105,7 @@ already has it.
 
 **Build.** versionCode 8, versionName 1.0.0, debug key `f5074815...2aa9c011`,
 APK Signature Scheme v2 verified, 17,061,607 bytes,
-SHA-256 `3187613abdae43b23d9ee3e2eb06c54ec32413f17fbf11e05fd0619e62dc7f96`.
+SHA-256 `da080f626091983f34f3b3bfb3e02039b0ea9e44d9e47904ee02d0a18bd2bffc`.
 65 unit tests pass, lint reports 0 errors / 16 warnings, `zipalign -c -p 4`
 passes. `libbitcoind.so` inside the APK is still `6becfe26...a8c74f02`, the
 daemon untouched.

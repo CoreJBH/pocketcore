@@ -240,7 +240,7 @@ validated again from the start. A build from another key would only install
 after an uninstall, and none has been published.
 
 The release APK is 17,061,607 bytes with SHA-256
-`3187613abdae43b23d9ee3e2eb06c54ec32413f17fbf11e05fd0619e62dc7f96`; the full
+`da080f626091983f34f3b3bfb3e02039b0ea9e44d9e47904ee02d0a18bd2bffc`; the full
 build record, including the bundled daemon's own hash, is in
 [docs/BUILD-RECORD.md](docs/BUILD-RECORD.md).
 
