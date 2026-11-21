@@ -1,4 +1,4 @@
-# Submitting POCKETCORE to F-Droid
+# Submitting PocketCore to F-Droid
 
 F-Droid builds from source on its own machine and signs the APK with its own
 key; nothing is uploaded but two text files. This directory holds them.
@@ -26,7 +26,7 @@ for each later release.
    `fdroid build -l` skips the network-blocked server VM and is the usual
    pre-submission check.
 4. Commit on a branch, push, and open a merge request titled
-   `New app: POCKETCORE (com.corejbh.pocketcore)`.
+   `New app: PocketCore (com.corejbh.pocketcore)`.
 
 ## What the reviewers will ask about
 

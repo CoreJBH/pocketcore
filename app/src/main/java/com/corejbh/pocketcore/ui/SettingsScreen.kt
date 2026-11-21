@@ -223,7 +223,7 @@ fun SettingsScreen(
         CardBox {
             SectionLabel("About")
             SpacerH(8)
-            InfoRow("App", "POCKETCORE ${BuildConfig.VERSION_NAME}", mono = false)
+            InfoRow("App", "PocketCore ${BuildConfig.VERSION_NAME}", mono = false)
             InfoRow("Package", BuildConfig.APPLICATION_ID, mono = true, truncate = true)
             InfoRow("bitcoind", state.binaryVersion.ifBlank { "bundled Bitcoin Core" }, mono = false)
             InfoRow("Binary", "libbitcoind.so (arm64-v8a)", mono = true)

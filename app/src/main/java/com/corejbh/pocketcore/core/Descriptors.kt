@@ -4,7 +4,7 @@ package com.corejbh.pocketcore.core
  * Turns what the user pastes into a watch-only descriptor that `scantxoutset`
  * accepts.
  *
- * POCKETCORE never holds a key: private keys (`xprv`/`tprv`/`zprv`/WIF and
+ * PocketCore never holds a key: private keys (`xprv`/`tprv`/`zprv`/WIF and
  * friends) are rejected before anything is sent to the node, and the rest of
  * the pipeline only ever sees a public descriptor.
  */
@@ -49,13 +49,13 @@ object Descriptors {
         val lowered = text.lowercase()
         privateKeyMarkers.firstOrNull { lowered.contains(it) }?.let { marker ->
             return Parsed.Invalid(
-                "This contains a private key ($marker). POCKETCORE is watch-only: remove the key and " +
+                "This contains a private key ($marker). PocketCore is watch-only: remove the key and " +
                     "use the matching xpub/zpub/ypub instead."
             )
         }
         wifToken(text)?.let {
             return Parsed.Invalid(
-                "That contains a WIF private key. Never paste it anywhere: POCKETCORE only needs a " +
+                "That contains a WIF private key. Never paste it anywhere: PocketCore only needs a " +
                     "public descriptor or an extended public key."
             )
         }

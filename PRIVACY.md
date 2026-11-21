@@ -1,19 +1,19 @@
-# POCKETCORE Privacy Policy
+# PocketCore Privacy Policy
 
-**App:** POCKETCORE — Bitcoin Core full node for Android
+**App:** PocketCore — Bitcoin Core full node for Android
 **Package:** `com.corejbh.pocketcore`
 **Developer:** CoreJBH
 **Effective date:** 21 November 2026
 
 ## The short version
 
-POCKETCORE collects **no personal data**. There is no account, no analytics, no
+PocketCore collects **no personal data**. There is no account, no analytics, no
 crash reporting, no advertising, and no third-party tracking SDK of any kind.
 Everything the app knows stays on your phone.
 
 ## What the app does not collect
 
-- **No personal information.** POCKETCORE never asks for, reads or transmits your
+- **No personal information.** PocketCore never asks for, reads or transmits your
   name, email address, phone number, contacts, calendar, photos, files, precise
   location, advertising ID or any other identifier.
 - **No analytics or telemetry.** There is no usage tracking, no event logging, no
@@ -24,13 +24,13 @@ Everything the app knows stays on your phone.
   attribution SDK, no social login SDK and no push notification service. It links
   to no third-party service at runtime other than the Bitcoin peer-to-peer
   network described below.
-- **No wallet and no keys.** POCKETCORE is a node, not a wallet. It does not
+- **No wallet and no keys.** PocketCore is a node, not a wallet. It does not
   create, store or accept private keys, seed phrases or WIF strings, and the
   bundled daemon is built with `ENABLE_WALLET=OFF`.
 
 ## Network connections the app makes
 
-POCKETCORE makes exactly two kinds of connection, both to do the one job the app
+PocketCore makes exactly two kinds of connection, both to do the one job the app
 has — validating the Bitcoin blockchain itself.
 
 1. **Bitcoin peer-to-peer.** The bundled Bitcoin Core daemon connects directly to
@@ -51,7 +51,7 @@ other destination would have to be HTTPS.
 
 ## What is stored on your device
 
-All data stays in the app's private storage, readable only by POCKETCORE:
+All data stays in the app's private storage, readable only by PocketCore:
 
 - the validated blockchain data (headers, blocks, chainstate),
 - `bitcoin.conf` and the daemon's logs,
@@ -79,7 +79,7 @@ contacts, storage, location, camera or microphone.
 
 ## Children
 
-POCKETCORE is a technical tool for running a Bitcoin node. It is not directed at
+PocketCore is a technical tool for running a Bitcoin node. It is not directed at
 children and collects no data from anyone, including children under 13.
 
 ## Data deletion
@@ -97,13 +97,13 @@ repository before the change ships, with the effective date above.
 
 Questions about this policy or the app: open an issue at
 <https://github.com/CoreJBH/pocketcore/issues>, or use the developer contact
-address shown on the POCKETCORE listing in Google Play.
+address shown on the PocketCore listing in Google Play.
 
 ---
 
 ## 한국어 요약
 
-POCKETCORE는 **개인정보를 전혀 수집하지 않습니다.** 계정도, 분석 도구도, 오류 수집
+PocketCore는 **개인정보를 전혀 수집하지 않습니다.** 계정도, 분석 도구도, 오류 수집
 (crash reporting)도, 광고도, 제3자 추적 SDK도 없습니다. 앱이 하는 통신은 비트코인
 P2P 네트워크 접속과 기기 안의 자기 노드와의 로컬 연결(`127.0.0.1`) 두 가지뿐이며,
 블록체인 데이터와 설정·로그는 모두 기기 내부 앱 전용 저장소에만 남습니다. 지갑이

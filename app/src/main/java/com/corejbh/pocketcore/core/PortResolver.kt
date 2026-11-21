@@ -89,12 +89,12 @@ class PortResolver(
             if (chosen != rpcPort) {
                 if (reservedByP2p) {
                     notes.add(
-                        "RPC port $rpcPort collides with the P2P listener. POCKETCORE is using port $chosen."
+                        "RPC port $rpcPort collides with the P2P listener. PocketCore is using port $chosen."
                     )
                 } else {
                     heldByAnotherApp = true
                     notes.add(
-                        "RPC port $rpcPort is in use by another app. POCKETCORE is using port $chosen " +
+                        "RPC port $rpcPort is in use by another app. PocketCore is using port $chosen " +
                             "with a freshly generated RPC password."
                     )
                 }

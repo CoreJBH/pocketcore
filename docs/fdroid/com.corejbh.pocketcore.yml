@@ -6,7 +6,7 @@ AuthorName: CoreJBH
 SourceCode: https://github.com/CoreJBH/pocketcore
 IssueTracker: https://github.com/CoreJBH/pocketcore/issues
 
-AutoName: POCKETCORE
+AutoName: PocketCore
 
 RepoType: git
 Repo: https://github.com/CoreJBH/pocketcore.git

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">POCKETCORE</string>
+    <string name="app_name">PocketCore</string>
     <string name="channel_node_name">Node</string>
     <string name="channel_node_description">Bitcoin Core node status</string>
 </resources>

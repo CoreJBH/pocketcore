@@ -1,4 +1,4 @@
-POCKETCORE is Bitcoin Core 32.1 running on an Android phone, built from
+PocketCore is Bitcoin Core 32.1 running on an Android phone, built from
 source, with no server between you and the chain.
 
 It exists for one reason: to check the chain with cryptography you can read
@@ -68,5 +68,5 @@ chain unless it is pruned; a 550 MB prune target held about 1.2 GB in
 testing. Use Wi-Fi for the first download. The phone gets warm while it
 validates - it is a full node, not a remote view of one.
 
-POCKETCORE is an independent project and is not affiliated with, endorsed by
+PocketCore is an independent project and is not affiliated with, endorsed by
 or sponsored by the Bitcoin Core project.

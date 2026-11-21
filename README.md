@@ -1,4 +1,4 @@
-<img src="docs/hero-splash.png" width="280" alt="The POCKETCORE launch card: a cyan isometric tesseract with a glowing core on a deep navy tile, the name POCKETCORE and the line Your mobile Bitcoin full node">
+<img src="docs/hero-splash.png" width="280" alt="The PocketCore launch card: a cyan isometric tesseract with a glowing core on a deep navy tile, the name PocketCore and the line Your mobile Bitcoin full node">
 
 **A real Bitcoin Core full node in your pocket. Every block checked by SHA-256d and libsecp256k1 on your own phone — no wallet, no accounts, no servers, no fake node.**
 
@@ -13,7 +13,7 @@
   <img alt="minSdk 26" src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square">
 </p>
 
-POCKETCORE bundles an actual `bitcoind` (Bitcoin Core 32.1) cross-compiled for
+PocketCore bundles an actual `bitcoind` (Bitcoin Core 32.1) cross-compiled for
 Android arm64, runs it from the app's own native library directory, and talks to
 it over loopback JSON-RPC. Nothing about the verification is re-implemented in
 Kotlin and nothing is delegated to a server: proof-of-work, Merkle roots, script
@@ -48,7 +48,7 @@ and no remote verifier anywhere in the APK: if the curve code were wrong, the
 node would reject valid blocks and stall, which is the one failure mode a node
 operator notices immediately.
 
-**Watch-only means no keys.** POCKETCORE derives addresses from a public
+**Watch-only means no keys.** PocketCore derives addresses from a public
 descriptor (`wpkh`, `tr`, `sh(wpkh)`, `pkh`, or a bare xpub/zpub/ypub) and asks
 the node's UTXO set for matches with `scantxoutset`. A `scantxoutset` result is
 not a balance from an API — it is the daemon scanning its own validated UTXO set
@@ -80,7 +80,7 @@ Every figure on these screens is an RPC answer from the phone's own node.
     <td align="center"><sub><b>SETTINGS</b></sub></td>
   </tr>
   <tr>
-    <td align="center" colspan="4"><img src="docs/screen-notification.png" width="620" alt="POCKETCORE status card in the notification shade: 31.64% - Block #601,537 Syncing, with a progress bar"></td>
+    <td align="center" colspan="4"><img src="docs/screen-notification.png" width="620" alt="PocketCore status card in the notification shade: 31.64% - Block #601,537 Syncing, with a progress bar"></td>
   </tr>
   <tr>
     <td align="center" colspan="4"><sub>The colorized foreground-service status card while the chain downloads</sub></td>
@@ -237,7 +237,7 @@ verify-english.py              fails if any non-English text enters the repo
    [Releases](https://github.com/CoreJBH/pocketcore/releases/latest) and copy it
    to the phone, or build it yourself with `./gradlew :app:assembleDebug`.
 2. Allow "install unknown apps" for the app you open it with, then install.
-3. Open POCKETCORE and press **START NODE**. The foreground notification shows
+3. Open PocketCore and press **START NODE**. The foreground notification shows
    the current height while the node syncs.
 
 All builds are signed with the same debug key (certificate SHA-256
@@ -340,7 +340,7 @@ bitcoin-cli getpeerinfo            # transport per peer (v1 or v2) and services
 1. On a desktop node of the same network, create a snapshot:
    `bitcoin-cli dumptxoutset /path/utxo-<height>.dat`
 2. Copy the `.dat` file to the phone.
-3. In POCKETCORE open **SYNC**, choose the file, then press **LOAD SNAPSHOT**
+3. In PocketCore open **SYNC**, choose the file, then press **LOAD SNAPSHOT**
    while the node is running (the app calls `loadtxoutset`).
 4. The sync screen then shows a snapshot chainstate and the background
    validation chainstate side by side until the snapshot has been fully

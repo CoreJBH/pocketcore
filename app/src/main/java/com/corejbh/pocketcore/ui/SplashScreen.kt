@@ -193,7 +193,7 @@ private fun SplashOverlay(onFinished: () -> Unit) {
             }
             Spacer(Modifier.height(26.dp))
             Text(
-                text = "POCKETCORE",
+                text = "PocketCore",
                 color = Color.White,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.SemiBold,

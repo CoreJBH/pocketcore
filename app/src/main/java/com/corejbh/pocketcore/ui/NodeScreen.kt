@@ -53,7 +53,7 @@ fun NodeScreen(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = "POCKETCORE",
+                    text = "PocketCore",
                     color = PocketColors.Text,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
