@@ -1,6 +1,6 @@
 # Build record
 
-Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 7).
+Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 8).
 
 ## Daemon
 
@@ -31,17 +31,82 @@ BuildID[sha1]=84b79d173e74bd6768165686da839a6ac66267b2, stripped
 | Item | Value |
 | --- | --- |
 | Package | `com.jbitmstr.pocketcore` |
-| Version | 1.0.0 (versionCode 7) |
+| Version | 1.0.0 (versionCode 8) |
 | minSdk / targetSdk | 26 / 35 |
 | APK | `pocketcore-1.0.0-debug.apk` |
-| APK size | 17,060,531 bytes |
-| APK SHA-256 | `dd44e23b09a81cfc0690c1f9603b52c5c28c7d7c5203520719cb93adf33ec23c` |
-| Signing | debug key `f5074815...2aa9c011`, APK Signature Scheme v2 verified, the same key as versionCode 2 to 6 (installs as an update) |
+| APK size | 17,061,607 bytes |
+| APK SHA-256 | `3187613abdae43b23d9ee3e2eb06c54ec32413f17fbf11e05fd0619e62dc7f96` |
+| Signing | debug key `f5074815...2aa9c011`, APK Signature Scheme v2 verified, the same key as versionCode 2 to 7 (installs as an update) |
 | Native code in APK | `lib/arm64-v8a/libbitcoind.so`, byte-identical to the stripped daemon (`6becfe26...a8c74f02`) |
 | Offline GeoIP asset | `assets/ipv4_country.bin`, 1,104,026 bytes (559,749 inside the APK), 245 countries, 362,998 ranges |
 | Lint | 0 errors, 16 warnings, 2 information |
 | Unit tests | 65 passing (`NodeModelsTest`, `FormatTest`, `ExplorerModelsTest`, `DescriptorsTest`, `RawTransactionTest`, `IpCountryIndexTest`, `AddressCodecTest`, `PortProbeTest`, `HeaderSyncTest`, `NotificationCardTest`) |
 | zipalign | `zipalign -c -p 4` passes |
+
+### versionCode 8 - the launch halo that is no longer cut, no pulse, and a card signboard
+
+Reported from the phone: the cyan halo behind the launch tile looked cut off in
+a straight line above and below the tile, and the mark kept breathing in and out
+while the splash was up.
+
+**Why the halo was cut.** `SplashScreen.kt` drew the halo with `drawBehind` on
+the tile's 120dp `Box`, at `radius = size.minDimension * 0.82f`, i.e. 38dp past
+the box on every side. The box sits inside the `Column` that carries the fade,
+`Modifier.graphicsLayer { alpha = alpha.value }`, and a Compose layer is clipped
+to the bounds of the composable that owns it - so the part of the glow above and
+below the box was cut exactly where the column began. (The screenshot shows it:
+the halo is wider than the tile but its top and bottom are straight.)
+
+**The fix.** The halo is no longer drawn by the tile. The overlay's own
+`Box` - the full-window node whose layer *is* the screen - draws one
+`Brush.radialGradient` centred on the tile, with the tile's centre resolved in
+the draw phase from `LayoutCoordinates` (`overlay.localPositionOf(tile, ...)`,
+so the callback order between child and parent cannot matter). The gradient
+reaches full transparency 150dp from the centre, 90dp clear of the tile's edge,
+and its stops are 0.20 / 0.175 / 0.108 / 0.046 / 0.012 / 0 at 0.00 / 0.30 /
+0.46 / 0.62 / 0.82 / 1.00. Its alphas are multiplied by the overlay's current
+fade, so the halo appears and disappears with the rest of the splash, and it
+meets no straight edge on a 360dp-wide phone.
+
+**No more pulse.** `rememberInfiniteTransition` with `RepeatMode.Reverse` and a
+1.00 <-> 1.035 scale is gone. The mark now eases from 95% to its final size once
+over 620 ms (`LinearOutSlowInEasing`), holds still, and the overlay fades out over
+260 ms - the same 1.1 s in total, without anything moving under the eye after the
+entrance.
+
+**README signboard, redrawn.** `docs/hero-splash.png` is now a compact 900 x 760
+RGBA card instead of a 1600 x 860 rectangle: `#050912` fill, 32px rounded
+corners, a `#1E293B` hairline, and a transparent surround, so GitHub's dark
+(`#0d1117`) and light (`#ffffff`) themes both show a deliberate shape rather than
+a black rectangle floating on the page. The tile, `POCKETCORE` and the one-line
+description are drawn on their own layer, measured with `getbbox()`, and centred
+- together with the halo's reach, which is what the eye balances - in the card,
+so the stack sits in the middle on both axes. The halo is drawn one notch
+quieter (peak alpha 0.19) and reaches 0.86 x the tile box, so it dies well inside
+the card. `README.md` shows it at `width="380"` so it fills a phone screen and a
+desktop column alike.
+
+**README text.** The body now leads with what the phone verifies rather than with
+the UI: a table of SHA-256d, proof of work, `libsecp256k1` (ECDSA and BIP340
+Schnorr), the script interpreter and BIP324 v2 transport, each with the file it
+comes from and the decision it settles, plus the watch-only `scantxoutset` path
+that keeps every private key out of the app. The install text no longer claims a
+newer build needs an uninstall: every build since versionCode 2 shares the debug
+key `f5074815...2aa9c011`, so a newer APK installs over the old one as an update,
+and uninstalling is what would delete the synced chain.
+
+**Repository.** The GitHub account was renamed `JBITmstr` -> `CoreJBH`; the
+remote, every Releases link and the contributor line follow it. The Android
+package stays `com.jbitmstr.pocketcore`, because changing `applicationId` would
+install a second app alongside the first and orphan the node data of everyone who
+already has it.
+
+**Build.** versionCode 8, versionName 1.0.0, debug key `f5074815...2aa9c011`,
+APK Signature Scheme v2 verified, 17,061,607 bytes,
+SHA-256 `3187613abdae43b23d9ee3e2eb06c54ec32413f17fbf11e05fd0619e62dc7f96`.
+65 unit tests pass, lint reports 0 errors / 16 warnings, `zipalign -c -p 4`
+passes. `libbitcoind.so` inside the APK is still `6becfe26...a8c74f02`, the
+daemon untouched.
 
 ### versionCode 7 - a larger launch screen and the README signboard
 

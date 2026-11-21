@@ -12,6 +12,12 @@ android {
         applicationId = "com.jbitmstr.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 8: the launch-screen halo is no longer clipped. The glow
+        // is drawn by the full-window layer as one radial gradient that fades
+        // to transparent 150dp out, instead of inside the tile's 120dp box,
+        // whose layer (the fade's alpha) cut it off in a straight line above and
+        // below the tile. The endless size pulse is gone too: the mark settles
+        // once from 95% and stays still until the overlay fades out.
         // versionCode 7: launch screen enlarged - the splash tile draws the
         // tesseract at 73% instead of 48.6% and the 96dp box became 120dp, so
         // the mark reads at 88dp on a 360dp phone instead of 47dp. Launcher
@@ -32,7 +38,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 7
+        versionCode = 8
         versionName = "1.0.0"
 
         ndk {

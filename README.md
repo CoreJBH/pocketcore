@@ -1,32 +1,68 @@
 <p align="center">
-  <img src="docs/hero-splash.png" width="900" alt="The POCKETCORE launch screen: a large cyan isometric tesseract with a glowing blue core on a deep navy tile, the name POCKETCORE and the line Your mobile Bitcoin full node">
+  <img src="docs/hero-splash.png" width="380" alt="The POCKETCORE launch card: a cyan isometric tesseract with a glowing core on a deep navy tile, the name POCKETCORE and the line Your mobile Bitcoin full node">
 </p>
 
-<p align="center"><b>A real Bitcoin Core full node in your pocket. No wallet, no accounts, no servers, no fake node.</b></p>
+<p align="center"><b>A real Bitcoin Core full node in your pocket. Every block checked by SHA-256d and libsecp256k1 on your own phone — no wallet, no accounts, no servers, no fake node.</b></p>
 
 <p align="center">
-  <a href="https://github.com/JBITmstr/pocketcore/releases/latest"><img alt="Android APK 1.0.0" src="https://img.shields.io/badge/Android-APK%201.0.0-3ddc84?style=flat-square"></a>
+  <a href="https://github.com/CoreJBH/pocketcore/releases/latest"><img alt="Android APK 1.0.0" src="https://img.shields.io/badge/Android-APK%201.0.0-3ddc84?style=flat-square"></a>
   <img alt="Bitcoin Core 32.1" src="https://img.shields.io/badge/Bitcoin%20Core-32.1-f7931a?style=flat-square">
+  <img alt="libsecp256k1" src="https://img.shields.io/badge/signatures-libsecp256k1-38bdf8?style=flat-square">
+  <img alt="BIP324 v2 transport" src="https://img.shields.io/badge/P2P-BIP324%20v2-38bdf8?style=flat-square">
   <img alt="Kotlin 2.0.21" src="https://img.shields.io/badge/Kotlin-2.0.21-7f52ff?style=flat-square">
   <img alt="Jetpack Compose" src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285f4?style=flat-square">
   <img alt="ABI arm64-v8a" src="https://img.shields.io/badge/ABI-arm64--v8a-38bdf8?style=flat-square">
   <img alt="minSdk 26" src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square">
 </p>
 
-POCKETCORE bundles an actual
-`bitcoind` (Bitcoin Core 32.1) cross-compiled for Android arm64, runs it from the
-app's own native library directory, and talks to it over loopback JSON-RPC.
-The phone verifies the chain itself: the node engine is the unmodified Bitcoin
-Core source, built for `aarch64-linux-android`, not a re-implementation and not a
-remote node behind an API.
+POCKETCORE bundles an actual `bitcoind` (Bitcoin Core 32.1) cross-compiled for
+Android arm64, runs it from the app's own native library directory, and talks to
+it over loopback JSON-RPC. Nothing about the verification is re-implemented in
+Kotlin and nothing is delegated to a server: proof-of-work, Merkle roots, script
+execution and every ECDSA/Schnorr signature check run inside the unmodified
+Bitcoin Core source, built for `aarch64-linux-android`, on the device in your
+hand.
 
 **Download.** Grab `pocketcore.apk` from
-[Releases](https://github.com/JBITmstr/pocketcore/releases/latest) and install it
-(allow "install unknown apps" for the app you open it with). The build is
-debug-signed, so installing a newer build over it requires removing the previous
-one first.
+[Releases](https://github.com/CoreJBH/pocketcore/releases/latest) and install it
+(allow "install unknown apps" for the app you open it with). Every build shares
+one debug signing key, so a newer APK installs straight over the installed one —
+update in place rather than uninstalling, because removing the app deletes its
+node data (headers, blocks, settings) with it.
 
 ---
+
+## Cryptography
+
+Bitcoin is checked at four layers, and the phone does all four itself.
+
+| Primitive | What runs on the phone | What it decides |
+| --- | --- | --- |
+| **SHA-256d** | double SHA-256 over the 80-byte header, transaction ids/wtxids, and every Merkle node (`src/hash.h`, `src/crypto/sha256.cpp`) | the block hash, the txid and the Merkle root are what the daemon computed, not what a peer claimed |
+| **Proof of work** | the block hash compared against the target decoded from `nBits`, and the chainwork accumulated per header | a header is only accepted if enough work stands behind it; the best chain is the one with the most work, never the one a peer prefers |
+| **libsecp256k1** | ECDSA over secp256k1 (DER) and BIP340 Schnorr (64-byte signatures, x-only public keys) for taproot, plus BIP32 child-key derivation for descriptors | a spend is valid only if every signature in its script actually verifies |
+| **Script interpreter** | P2PKH, P2SH, P2WPKH, P2WSH, P2TR; BIP143 and BIP341 sighash; `OP_CLTV`, `OP_CSV`, multisig and the rest | the UTXO being spent is locked to this exact script and this exact transaction |
+| **BIP324 v2 transport** | BIP324's ElligatorSwift x-only ECDH handshake and ChaCha20-Poly1305 AEAD session per peer | traffic to peers is encrypted and authenticated, so a passive observer no longer reads every block and transaction you relay |
+
+`libsecp256k1` is Bitcoin Core's own vendored subtree, compiled statically into
+`libbitcoind.so`. There is no JNI signature code, no Pure-Java elliptic curve
+and no remote verifier anywhere in the APK: if the curve code were wrong, the
+node would reject valid blocks and stall, which is the one failure mode a node
+operator notices immediately.
+
+**Watch-only means no keys.** POCKETCORE derives addresses from a public
+descriptor (`wpkh`, `tr`, `sh(wpkh)`, `pkh`, or a bare xpub/zpub/ypub) and asks
+the node's UTXO set for matches with `scantxoutset`. A `scantxoutset` result is
+not a balance from an API — it is the daemon scanning its own validated UTXO set
+for the `scriptPubKey`s those derived keys produce. Private keys, WIF strings and
+seed phrases are refused before they reach the node, and the daemon is compiled
+with `ENABLE_WALLET=OFF`, so there is no key store to fill even if someone tried.
+
+**Nothing leaves the phone.** The daemon's only network traffic is its own P2P
+connections; RPC binds to `127.0.0.1` with a generated user and password and is
+never exposed to the LAN. `network_security_config.xml` allows cleartext HTTP to
+`127.0.0.1` and `localhost` only; every other destination is HTTPS-only, and the
+app makes no requests of its own.
 
 ## Screens
 
@@ -59,6 +95,10 @@ Every figure on these screens is an RPC answer from the phone's own node.
   Bitcoin Core 32.1 `bitcoind` built for `aarch64-linux-android` with the Android
   NDK. It is extracted into `nativeLibraryDir` at install time and executed as a
   child process of a foreground service.
+- **Signature checks in your pocket.** Every block the phone accepts has had its
+  proof of work checked, its Merkle root rebuilt, its scripts executed and its
+  ECDSA or Schnorr signatures verified by `libsecp256k1` — on the phone's own
+  CPU, while the app shows the height climbing.
 - **Wallet-free by design.** Built with `ENABLE_WALLET=OFF`; the node validates,
   stores and serves the chain, and leaves keys to the wallet you already use.
 - **Live dashboard from RPC.** Block height and header height, sync percentage,
@@ -91,8 +131,10 @@ Every figure on these screens is an RPC answer from the phone's own node.
   data directory and ports.
 - **Background policy.** "Wi-Fi only" and "Charging only" pause the node (graceful
   `stop` RPC) and start it again when the condition returns.
-- **Animated launch screen.** A 1.1 s midnight-blue splash with the tesseract
-  mark easing in, pulsing once and fading into the dashboard.
+- **Calm launch screen.** A 1.1 s midnight-navy splash: the tesseract mark
+  settles once from 95% at full opacity, holds, and fades into the dashboard.
+  The cyan halo behind the tile is one radial gradient drawn by the whole
+  window and reaches full transparency 150dp out, so no box edge ever clips it.
 - **Colorized status card.** The foreground service notification is a colorized
   card in the app's own blues, laid out like the node apps it is compared with:
   one small icon on the left (no large icon, so no second icon on the right), the
@@ -126,7 +168,7 @@ NodeController  ——  NodeService  (foreground service, colorized status card)
                               v
                         bitcoind child process
                         (libbitcoind.so executed from nativeLibraryDir)
-                              |  P2P to the network
+                              |  BIP324 v2 P2P to the network
                               v
                         <app files>/node/data   pruned chain, debug.log, .lock
 ```
@@ -134,9 +176,12 @@ NodeController  ——  NodeService  (foreground service, colorized status card)
 The app is a thin, honest client: it never parses the P2P wire format or the
 block serialization itself. Every figure on screen — height, headers, peers,
 mempool, block, transaction, UTXO set — is an RPC answer the daemon gave, and
-every control on screen is an RPC call. `NodeController` owns the state,
-polling and the Wi-Fi/charging policy; `NodeService` keeps the process alive and
-paints the status card; the daemon itself is untouched Bitcoin Core.
+every control on screen is an RPC call. That separation is deliberate: the UI
+cannot claim a block is valid, because the UI has no opinion about validity at
+all. `NodeController` owns the state, polling and the Wi-Fi/charging policy;
+`NodeService` keeps the process alive and paints the status card; the daemon
+itself is untouched Bitcoin Core, and the cryptography in the table above is
+Core's own code, compiled for this phone.
 
 ## Project layout
 
@@ -164,7 +209,7 @@ app/src/main/java/com/jbitmstr/pocketcore/
     AddressCodec.kt            scriptPubKey hex -> base58 / bech32 / bech32m
     GeoIp.kt, IpCountryIndex.kt  offline peer country table
   ui/                          Compose screens: Node, Sync, Explore, Settings
-  ui/SplashScreen.kt           midnight-blue animated launch overlay
+  ui/SplashScreen.kt           midnight-navy launch overlay
 app/src/main/jniLibs/arm64-v8a/libbitcoind.so   the real Bitcoin Core daemon
 app/src/main/assets/ipv4_country.bin            offline IPv4 -> country ranges
 tools/                         icon, screenshot, GeoIP asset and RPC verification scripts
@@ -181,15 +226,21 @@ verify-english.py              fails if any non-English text enters the repo
 ## Install
 
 1. Download `pocketcore.apk` from
-   [Releases](https://github.com/JBITmstr/pocketcore/releases/latest) and copy it
+   [Releases](https://github.com/CoreJBH/pocketcore/releases/latest) and copy it
    to the phone, or build it yourself with `./gradlew :app:assembleDebug`.
 2. Allow "install unknown apps" for the app you open it with, then install.
 3. Open POCKETCORE and press **START NODE**. The foreground notification shows
    the current height while the node syncs.
 
-Debug-signed: reinstalling a newer build requires removing the previous one.
-The release APK is 17,060,531 bytes with SHA-256
-`dd44e23b09a81cfc0690c1f9603b52c5c28c7d7c5203520719cb93adf33ec23c`; the full
+All builds are signed with the same debug key (certificate SHA-256
+`f5074815...2aa9c011`, unchanged since versionCode 2), so a newer APK installs
+over the installed one as an update and keeps the synced chain. Do not uninstall
+to upgrade: that deletes `<app files>/node/data`, and the chain has to be
+validated again from the start. A build from another key would only install
+after an uninstall, and none has been published.
+
+The release APK is 17,061,607 bytes with SHA-256
+`3187613abdae43b23d9ee3e2eb06c54ec32413f17fbf11e05fd0619e62dc7f96`; the full
 build record, including the bundled daemon's own hash, is in
 [docs/BUILD-RECORD.md](docs/BUILD-RECORD.md).
 
@@ -231,9 +282,12 @@ section of the active network. The values written here are the ones the app just
 verified as free, so the daemon and the app always agree on the endpoint (the
 `LOCAL JSON-RPC` card and `COPY WALLET CONF` show the port actually in use).
 
-Chain data, `debug.log` and the datadir lock live in `<app files>/node/data`.
-Cleartext HTTP is permitted only for `127.0.0.1` and `localhost` by
-`network_security_config.xml`; every other destination is HTTPS-only.
+`v2transport` is left at Bitcoin Core 32.1's own default (on), so peers that
+support BIP324 negotiate the encrypted transport; a peer that does not falls
+back to the legacy v1 handshake. Chain data, `debug.log` and the datadir lock
+live in `<app files>/node/data`. Cleartext HTTP is permitted only for
+`127.0.0.1` and `localhost` by `network_security_config.xml`; every other
+destination is HTTPS-only.
 
 ## Talking to the node
 
@@ -256,6 +310,15 @@ rpcpassword=<rpcpassword>
 RPC binds to loopback only, so it is reachable from the phone itself and never
 from the local network. There is no wallet RPC surface to expose: the daemon is
 built without wallet support.
+
+### Checking the node's own view
+
+```bash
+bitcoin-cli getblockchaininfo      # verified height, chainwork, verificationprogress
+bitcoin-cli getblock <hash> 2      # the block the phone stored, with its tx list
+bitcoin-cli gettxoutsetinfo        # UTXO set the descriptor scan reads
+bitcoin-cli getpeerinfo            # transport per peer (v1 or v2) and services
+```
 
 ### Loading an AssumeUTXO snapshot
 
@@ -300,6 +363,10 @@ cp build-arm64/bin/bitcoind app/src/main/jniLibs/arm64-v8a/libbitcoind.so
 Source archive SHA-256 (official
 [SHA256SUMS](https://bitcoincore.org/bin/bitcoin-core-32.1/SHA256SUMS)):
 `a5f2f61e32cf7f790641c9ec306a3c88ca7b5a556946956b1f35ffd7e27813f9`
+
+`libsecp256k1` comes from that same archive (`src/secp256k1`), so the curve,
+Schnorr and BIP324 handshake code in the APK is the audited upstream subtree at
+the version Core 32.1 pins — no separate copy, no patched primitives.
 
 The result is an ARM64 Android executable, not a shared library that pretends to
 be one:
@@ -359,13 +426,14 @@ its own binary.
 
 ## Contributors
 
-- **[@JBITmstr](https://github.com/JBITmstr)** — creator, product direction and
+- **[@CoreJBH](https://github.com/CoreJBH)** — creator, product direction and
   design
 - **Gilbert ([Pickle](https://pickle.com))** — AI co-builder: architecture,
   Kotlin/Compose implementation, NDK cross-build of the daemon, build
   verification and review
 
-Third-party components: [Bitcoin Core](https://github.com/bitcoin/bitcoin) (MIT),
-Boost headers (Boost Software License), [DB-IP](https://db-ip.com) IP-to-Country
-Lite (CC BY 4.0, attribution in `app/src/main/assets/ipv4_country_NOTICE.txt`),
-AndroidX and Jetpack Compose (Apache-2.0).
+Third-party components: [Bitcoin Core](https://github.com/bitcoin/bitcoin) (MIT,
+including `libsecp256k1`), Boost headers (Boost Software License),
+[DB-IP](https://db-ip.com) IP-to-Country Lite (CC BY 4.0, attribution in
+`app/src/main/assets/ipv4_country_NOTICE.txt`), AndroidX and Jetpack Compose
+(Apache-2.0).
