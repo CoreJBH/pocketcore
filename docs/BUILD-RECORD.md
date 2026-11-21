@@ -2,6 +2,29 @@
 
 Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 9).
 
+## versionCode 10 — the Google Play build
+
+Built on 2026-11-21 as the first bundle for Google Play, after the Android
+package moved and the build switched from the debug key to a release keystore.
+
+| Item | Value |
+| --- | --- |
+| Package | `com.corejbh.pocketcore` (`com.jbitmstr.pocketcore` up to versionCode 9) |
+| Version | 1.0.0 (versionCode 10) |
+| Bundle | `pocketcore-1.0.0-release.aab` |
+| Bundle size | 13,335,360 bytes |
+| Bundle SHA-256 | `831516f970a5331d068ddad6dbde3dee5f87f59883fee0f660ad80b5a1bc5527` |
+| Signing | `keystore/pocketcore-release.jks`, alias `pocketcore`, 2048-bit RSA, SHA256withRSA, valid 10,000 days (to 2054-04-08), certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A`; `jarsigner -verify` reports `jar verified` (self-signed upload key, no timestamp) |
+| Native code in bundle | `base/lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, still the stripped daemon `6becfe26...a8c74f02` |
+| Lint | 0 errors, 16 warnings |
+| Unit tests | 93 passing in both `testDebugUnitTest` and `testReleaseUnitTest` |
+
+Because `applicationId` changed, this build does not update an installed debug
+APK: it installs beside it with its own data directory. The keystore directory
+and `keystore.properties` are git-ignored; a clone without them still builds
+every variant, and only the release bundle is left unsigned.
+
+
 ## Daemon
 
 | Item | Value |

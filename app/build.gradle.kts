@@ -1,17 +1,34 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Release signing is read from keystore/keystore.properties, which is never
+// committed. A fresh clone or CI checkout without that file still builds every
+// variant; only the release bundle is left unsigned there.
+val keystorePropertiesFile = rootProject.file("keystore/keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+val hasReleaseKeystore = keystorePropertiesFile.exists()
+
 android {
-    namespace = "com.jbitmstr.pocketcore"
+    namespace = "com.corejbh.pocketcore"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.jbitmstr.pocketcore"
+        applicationId = "com.corejbh.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 10: first Google Play build. The applicationId moved from
+        // com.jbitmstr.pocketcore to com.corejbh.pocketcore and the build is now
+        // signed with a release keystore instead of the debug key, so it installs
+        // as a separate app from the earlier debug APKs.
         // versionCode 9: security and stability review. An RPC port held by
         // another app no longer receives the app's credentials (a stop request
         // is only sent to a daemon of this app, found through /proc), the RPC
@@ -46,7 +63,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 9
+        versionCode = 10
         versionName = "1.0.0"
 
         ndk {
@@ -55,11 +72,27 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
         }
         release {
+            if (hasReleaseKeystore) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

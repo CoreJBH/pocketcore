@@ -27,9 +27,11 @@ boost_*/
 *.log
 node/
 
-# Keystores and signing material (the release APK is debug-signed)
+# Keystores and signing material (release bundle signing; never committed)
 *.jks
 *.keystore
+keystore/
+keystore.properties
 
 # Python tooling
 __pycache__/

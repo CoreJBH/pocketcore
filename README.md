@@ -189,7 +189,7 @@ Core's own code, compiled for this phone.
 ## Project layout
 
 ```
-app/src/main/java/com/jbitmstr/pocketcore/
+app/src/main/java/com/corejbh/pocketcore/
   MainActivity.kt              Compose host, notification permission
   core/
     NodePaths.kt               datadir, conf, logs, snapshot directory
@@ -251,6 +251,12 @@ The release APK is 17,216,155 bytes with SHA-256
 `872b8a6c406574ce15852ce0b1d895ffa08cb4b08f65f9e8f80b153379daabce`; the full
 build record, including the bundled daemon's own hash, is in
 [docs/BUILD-RECORD.md](docs/BUILD-RECORD.md).
+
+**The Google Play build has its own identity.** The version submitted to Play is
+`com.corejbh.pocketcore` (versionCode 10), signed with the release key rather than
+the debug key, so it installs as a separate app from the debug APKs above — the
+two can sit side by side, and the Play build starts with an empty node directory.
+The debug APK line in Releases is unchanged and still updates in place.
 
 ## Configuration the app writes
 
