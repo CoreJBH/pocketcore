@@ -1,10 +1,8 @@
-<p align="center">
-  <img src="docs/hero-splash.png" width="380" alt="The POCKETCORE launch card: a cyan isometric tesseract with a glowing core on a deep navy tile, the name POCKETCORE and the line Your mobile Bitcoin full node">
-</p>
+<img src="docs/hero-splash.png" width="280" alt="The POCKETCORE launch card: a cyan isometric tesseract with a glowing core on a deep navy tile, the name POCKETCORE and the line Your mobile Bitcoin full node">
 
-<p align="center"><b>A real Bitcoin Core full node in your pocket. Every block checked by SHA-256d and libsecp256k1 on your own phone — no wallet, no accounts, no servers, no fake node.</b></p>
+**A real Bitcoin Core full node in your pocket. Every block checked by SHA-256d and libsecp256k1 on your own phone — no wallet, no accounts, no servers, no fake node.**
 
-<p align="center">
+<p>
   <a href="https://github.com/CoreJBH/pocketcore/releases/latest"><img alt="Android APK 1.0.0" src="https://img.shields.io/badge/Android-APK%201.0.0-3ddc84?style=flat-square"></a>
   <img alt="Bitcoin Core 32.1" src="https://img.shields.io/badge/Bitcoin%20Core-32.1-f7931a?style=flat-square">
   <img alt="libsecp256k1" src="https://img.shields.io/badge/signatures-libsecp256k1-38bdf8?style=flat-square">

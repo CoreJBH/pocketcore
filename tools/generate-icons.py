@@ -80,10 +80,11 @@ BANNER_HALO_SHAPE = (
     (1.00, 0.000),
 )
 BANNER_HALO_FILL = 0.97     # of the clear space from the tile centre to the nearest edge
-# The README signboard: a compact, centred card whose padding is measured from the
-# artwork, so no empty band is left above the tile or below the description.
+# The README signboard: a compact card whose size comes from the artwork itself,
+# so the padding is the same band on all four sides and no empty space is left
+# above the tile or below the description.
 CARD_RADIUS = 32            # px at the card's final size
-HERO_CARD_PX = (760, 540)   # the card, before the 2x supersample
+HERO_PAD_PX = 56            # one even band of card around the artwork
 HERO_BOX_PX = 320           # tile edge
 HERO_NAME_PX = 50           # POCKETCORE, semibold
 HERO_SUB_PX = 22            # the one-line description
@@ -312,36 +313,35 @@ def hero_banner(tile: Image.Image) -> Image.Image:
     a card is a deliberate shape that the page colour simply passes around, and
     the white name stays legible on it in either theme.
 
-    The card is a fixed, compact size and the tile plus the two lines are drawn
-    on their own layer, measured, and centred in it by that measurement, so the
-    band above the tile's top edge is the same as the band below the description
-    and both side bands match. Only the artwork's visible footprint is measured:
-    the halo is drawn afterwards and is not allowed to shift the stack, and
-    neither are the near-transparent pixels along the tile's rounded corners,
-    which under ALPHA_FLOOR do not count as something the eye can see.
+    The card is not a fixed frame: the tile and the two lines are drawn on their
+    own layer, measured, and the card is cut one even band wider than that
+    measurement on all four sides, so the padding above the tile's top edge is
+    the same as the padding below the description and as the side bands. Only the
+    artwork's visible footprint counts - alpha above the field's own noise - so
+    neither the near-transparent pixels along the tile's rounded corners nor the
+    halo, which is drawn afterwards, can shift or enlarge the layout.
 
     Rendered at twice the final size and reduced with LANCZOS so the type stays
-    crisp at GitHub's line width.
+    crisp at GitHub's line widths.
     """
-    width, height = HERO_CARD_PX
     supersample = 2
-    shape = (width * supersample, height * supersample)
-    centre_x = shape[0] / 2.0
-
+    pad = HERO_PAD_PX * supersample
     box = HERO_BOX_PX * supersample
     gap_tile = 32 * supersample
     gap_line = 14 * supersample
     name_font = font(HERO_NAME_PX * supersample, bold=True)
     sub_font = font(HERO_SUB_PX * supersample)
 
-    # Pass 1: the tile and the two lines on their own transparent layer, at any
-    # position, with the tile's top edge on the layer's top edge.
-    stack = Image.new("RGBA", shape, (0, 0, 0, 0))
-    stack.alpha_composite(
+    # Pass 1: the artwork on a transparent scratch layer, tile top edge on the
+    # layer's top edge, so getbbox() below returns the artwork's own footprint.
+    scratch_size = (900 * supersample, 760 * supersample)
+    centre_x = scratch_size[0] / 2.0
+    scratch = Image.new("RGBA", scratch_size, (0, 0, 0, 0))
+    scratch.alpha_composite(
         tile.resize((box, box), Image.LANCZOS),
         (int(round(centre_x - box / 2)), 0),
     )
-    draw = ImageDraw.Draw(stack, "RGBA")
+    draw = ImageDraw.Draw(scratch, "RGBA")
     name_top = box + gap_tile
     tracked_text(
         draw, centre_x, name_top, "POCKETCORE",
@@ -352,21 +352,18 @@ def hero_banner(tile: Image.Image) -> Image.Image:
         "Your mobile Bitcoin full node",
         sub_font, 1.2 * supersample, (0x94, 0xA3, 0xB8, 255),
     )
+    left, top, right, bottom = visible_bbox(scratch)
+    artwork = scratch.crop((left, top, right, bottom))
 
-    # Pass 2: centre that measured block on the card, on both axes.
-    left, top, right, bottom = visible_bbox(stack)
-    content_w, content_h = right - left, bottom - top
-    if content_w > shape[0] or content_h > shape[1]:
-        raise SystemExit(f"hero banner content {content_w} x {content_h} does not fit {shape}")
-    offset_x = int(round((shape[0] - (left + right)) / 2.0))
-    offset_y = int(round((shape[1] - (top + bottom)) / 2.0))
-    stack = stack.transform(
-        shape, Image.AFFINE, (1, 0, -offset_x, 0, 1, -offset_y), resample=Image.BICUBIC
-    )
+    # Pass 2: the card is that artwork plus one even band, and the artwork sits
+    # on it by construction, so both axes are centred and no band is wasted.
+    shape = (artwork.width + 2 * pad, artwork.height + 2 * pad)
+    stack = Image.new("RGBA", shape, (0, 0, 0, 0))
+    stack.alpha_composite(artwork, (pad, pad))
     print(
-        f"hero banner: content {content_w // supersample} x {content_h // supersample} px "
-        f"on a {width} x {height} card, padding "
-        f"{(shape[0] - content_w) // (2 * supersample)} x {(shape[1] - content_h) // (2 * supersample)} px"
+        f"hero banner: artwork {artwork.width // supersample} x {artwork.height // supersample} px, "
+        f"card {shape[0] // supersample} x {shape[1] // supersample} px, "
+        f"padding {HERO_PAD_PX} px on every side"
     )
 
     # The card, with its own rounded corners cut out of the canvas.
@@ -377,10 +374,10 @@ def hero_banner(tile: Image.Image) -> Image.Image:
     )
     card.putalpha(mask)
 
-    # The halo, centred on the tile as it now sits, sized to the clear space the
-    # card actually leaves so its gradient reaches zero inside the card instead
-    # of being clipped by the edge.
-    tile_centre = (centre_x + offset_x, box / 2.0 + offset_y)
+    # The halo, centred on the tile as it sits on the card, sized to the clear
+    # space the card actually leaves so its gradient reaches zero inside the card
+    # instead of being clipped by the edge.
+    tile_centre = (pad + centre_x - left, pad + box / 2.0)
     clear = min(
         tile_centre[0], shape[0] - tile_centre[0],
         tile_centre[1], shape[1] - tile_centre[1],
@@ -395,7 +392,7 @@ def hero_banner(tile: Image.Image) -> Image.Image:
         radius=(CARD_RADIUS - 1) * supersample, outline=(0x1E, 0x29, 0x3B, 255), width=supersample
     )
     card.alpha_composite(stack)
-    return card.resize((width, height), Image.LANCZOS)
+    return card.resize((shape[0] // supersample, shape[1] // supersample), Image.LANCZOS)
 
 
 def monochrome_preview(mono: Image.Image) -> Image.Image:
