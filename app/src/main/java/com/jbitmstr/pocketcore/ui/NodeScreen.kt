@@ -25,12 +25,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.jbitmstr.pocketcore.core.NodeConfig
 import com.jbitmstr.pocketcore.core.NodeController
 import com.jbitmstr.pocketcore.core.NodeStatus
 import com.jbitmstr.pocketcore.core.NodeUiState
@@ -40,11 +38,8 @@ import com.jbitmstr.pocketcore.core.PeerInfo
 fun NodeScreen(
     state: NodeUiState,
     onStart: (Boolean) -> Unit,
-    onStop: () -> Unit,
-    onRestart: () -> Unit,
-    onOpenSync: () -> Unit
+    onStop: () -> Unit
 ) {
-    val context = LocalContext.current
     var expandedPeer by remember { mutableStateOf<String?>(null) }
     var pendingBan by remember { mutableStateOf<PeerInfo?>(null) }
 
@@ -79,23 +74,27 @@ fun NodeScreen(
         SpacerH(12)
 
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            when (state.status) {
-                NodeStatus.RUNNING, NodeStatus.STARTING -> {
-                    ActionButton("STOP", onStop, modifier = Modifier.weight(1f))
-                    ActionButton("RESTART", onRestart, modifier = Modifier.weight(1f))
-                }
-                NodeStatus.WAITING -> {
-                    ActionButton("START NOW", onClick = { onStart(true) }, filled = true, modifier = Modifier.weight(2f))
-                    ActionButton("STOP", onStop, modifier = Modifier.weight(1f))
-                }
-                NodeStatus.STOPPING -> {
-                    ActionButton("STOPPING", onClick = {}, enabled = false, modifier = Modifier.weight(1f))
-                }
-                NodeStatus.ERROR, NodeStatus.STOPPED -> {
-                    ActionButton("START NODE", onClick = { onStart(false) }, filled = true, modifier = Modifier.weight(2f))
-                    ActionButton("SYNC", onOpenSync, modifier = Modifier.weight(1f))
-                }
-            }
+            // START and STOP are the only controls: each is enabled in the states
+            // it applies to, and the other stays visible but inert.
+            val canStart = state.status == NodeStatus.STOPPED ||
+                state.status == NodeStatus.ERROR ||
+                state.status == NodeStatus.WAITING
+            val canStop = state.status == NodeStatus.RUNNING ||
+                state.status == NodeStatus.STARTING ||
+                state.status == NodeStatus.WAITING
+            ActionButton(
+                text = if (state.status == NodeStatus.WAITING) "START NOW" else "START",
+                onClick = { onStart(state.status == NodeStatus.WAITING) },
+                enabled = canStart,
+                filled = canStart,
+                modifier = Modifier.weight(1f)
+            )
+            ActionButton(
+                text = if (state.status == NodeStatus.STOPPING) "STOPPING" else "STOP",
+                onClick = onStop,
+                enabled = canStop,
+                modifier = Modifier.weight(1f)
+            )
         }
 
         if (state.detail != null && state.status != NodeStatus.RUNNING) {
@@ -106,99 +105,6 @@ fun NodeScreen(
         state.portNote?.let { note ->
             SpacerH(10)
             NoteBanner(note, PocketColors.Warning)
-        }
-
-        SpacerH(16)
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatTile(
-                label = "Peers",
-                value = state.network?.connections?.toString() ?: "0",
-                sub = state.network?.let { "${it.connectionsIn} in / ${it.connectionsOut} out" },
-                modifier = Modifier.weight(1f)
-            )
-            StatTile(
-                label = "Mempool",
-                value = state.mempool?.let { formatCount(it.transactions.toLong()) } ?: "0",
-                sub = state.mempool?.let { "${formatBytes(it.bytes)} / ${formatBytes(it.usage)} usage" },
-                modifier = Modifier.weight(1f)
-            )
-        }
-        SpacerH(10)
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatTile(
-                label = "Chain data",
-                value = state.blockchain?.let { formatBytes(it.sizeOnDisk) } ?: "-",
-                sub = state.blockchain?.let {
-                    if (it.pruned) "pruned at ${formatCount(it.pruneHeight)}" else "full chain"
-                },
-                modifier = Modifier.weight(1f)
-            )
-            StatTile(
-                label = "Uptime",
-                value = state.uptimeSeconds?.let { formatDuration(it) } ?: "-",
-                sub = state.networkLabel.ifBlank { null },
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        SpacerH(16)
-        CardBox {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SectionLabel("Local JSON-RPC", Modifier.weight(1f))
-                Text(
-                    text = if (state.rpcReachable) "ONLINE" else "OFFLINE",
-                    color = if (state.rpcReachable) PocketColors.Running else PocketColors.Faint,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 1.sp
-                )
-            }
-            SpacerH(8)
-            InfoRow("Host", "127.0.0.1")
-            InfoRow(
-                "Port",
-                if (state.customRpcPort) "${state.rpcPort} (${state.config.network.rpcPort} was busy)" else state.rpcPort.toString(),
-                copyValue = state.rpcPort.toString()
-            )
-            InfoRow("User", state.config.rpcUser, copyValue = state.config.rpcUser)
-            var revealed by remember { mutableStateOf(false) }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                InfoRow(
-                    label = "Password",
-                    value = if (revealed) state.config.rpcPassword else "••••••••••••",
-                    copyValue = state.config.rpcPassword,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    text = if (revealed) "HIDE" else "SHOW",
-                    color = PocketColors.Accent,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 1.sp,
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .clickable { revealed = !revealed }
-                )
-            }
-            SpacerH(6)
-            Muted("Loopback only. Wallets and tools on this phone can connect to this endpoint.")
-            SpacerH(12)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ActionButton(
-                    "COPY CONNECTION",
-                    onClick = {
-                        copyToClipboard(context, "RPC connection", NodeConfig.rpcSnippet(state.config, state.rpcPort))
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-                ActionButton(
-                    "COPY WALLET CONF",
-                    onClick = {
-                        copyToClipboard(context, "bitcoin.conf", NodeConfig.clientConf(state.config, state.rpcPort))
-                    },
-                    modifier = Modifier.weight(1f)
-                )
-            }
         }
 
         SpacerH(12)

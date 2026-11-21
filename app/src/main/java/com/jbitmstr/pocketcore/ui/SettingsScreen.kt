@@ -35,7 +35,6 @@ import com.jbitmstr.pocketcore.BuildConfig
 import com.jbitmstr.pocketcore.core.BitcoinNetwork
 import com.jbitmstr.pocketcore.core.DescriptorScanController
 import com.jbitmstr.pocketcore.core.DescriptorState
-import com.jbitmstr.pocketcore.core.NodeConfig
 import com.jbitmstr.pocketcore.core.NodeController
 import com.jbitmstr.pocketcore.core.NodePaths
 import com.jbitmstr.pocketcore.core.NodeSettingsState
@@ -53,17 +52,23 @@ fun SettingsScreen(
     onPruneChange: (Int) -> Unit,
     onWifiOnlyChange: (Boolean) -> Unit,
     onChargingOnlyChange: (Boolean) -> Unit,
-    onRotateCredentials: () -> Unit,
+    onRebuildAsFull: () -> Unit,
     onWipeData: () -> Unit
 ) {
     val context = LocalContext.current
     var confirmWipe by remember { mutableStateOf(false) }
     var showLog by remember { mutableStateOf(false) }
     var dataSize by remember { mutableStateOf(-1L) }
+    var freeBytes by remember { mutableStateOf(-1L) }
+    var confirmFull by remember { mutableStateOf(false) }
     val scan by DescriptorScanController.state.collectAsStateWithLifecycle()
 
     LaunchedEffect(config.network) {
-        dataSize = withContext(Dispatchers.IO) { NodePaths.datadirSizeBytes(context) }
+        val measured = withContext(Dispatchers.IO) {
+            NodePaths.datadirSizeBytes(context) to NodePaths.freeSpaceBytes(context)
+        }
+        dataSize = measured.first
+        freeBytes = measured.second
     }
     LaunchedEffect(config.descriptorInput, config.descriptorNormalized) {
         DescriptorScanController.loadSaved(config.descriptorInput, config.descriptorNormalized)
@@ -75,7 +80,7 @@ fun SettingsScreen(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 18.dp)
     ) {
-        ScreenHeader(title = "Settings", subtitle = "Node, wallets, storage, background policy and RPC access")
+        ScreenHeader(title = "Settings", subtitle = "Node, wallets, storage and background policy")
         SpacerH(12)
 
         CardBox {
@@ -106,27 +111,50 @@ fun SettingsScreen(
             SectionLabel("Storage")
             SpacerH(10)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(550, 2048, 5120).forEach { value ->
+                // 0 means no pruning at all: the full chain is kept.
+                listOf(550, 2048, 5120, 0).forEach { value ->
                     Chip(
-                        text = if (value < 1024) "$value MB" else "${value / 1024} GB",
+                        text = when {
+                            value == 0 -> "Full"
+                            value < 1024 -> "$value MB"
+                            else -> "${value / 1024} GB"
+                        },
                         selected = config.pruneMb == value,
-                        onClick = { onPruneChange(value) },
+                        onClick = {
+                            // Once a block file has been deleted Core will not
+                            // re-open the chain as unpruned, so Full on a chain
+                            // that already outgrew its prune target needs the
+                            // data rebuilt first.
+                            val prunedAlready = config.pruneMb != 0 &&
+                                dataSize >= config.pruneMb.toLong() * 1024L * 1024L
+                            if (value == 0 && prunedAlready) confirmFull = true
+                            else onPruneChange(value)
+                        },
                         modifier = Modifier.weight(1f)
                     )
                 }
             }
             SpacerH(10)
-            Muted("The chain is pruned to this size. A pruned node still validates every block and serves wallets normally.")
+            if (config.pruneMb == 0) {
+                Muted(
+                    "Full keeps every block, so the whole chain has to fit on the phone: about " +
+                        "750-800 GB on mainnet, and it has to stay free while the chain is verified."
+                )
+                if (config.network == BitcoinNetwork.MAINNET && freeBytes >= 0 && freeBytes < FULL_CHAIN_BYTES) {
+                    SpacerH(8)
+                    NoteBanner(
+                        "This phone has ${formatBytes(freeBytes)} free and a full mainnet chain needs " +
+                            "about 800 GB. Pick a pruned size unless that storage is really there.",
+                        PocketColors.Warning
+                    )
+                }
+            } else {
+                Muted("The chain is pruned to this size. A pruned node still validates every block and serves wallets normally.")
+            }
             SpacerH(10)
             InfoRow("Data directory", NodePaths.dataDir(context).absolutePath, mono = false, truncate = true)
             InfoRow("Used by chain", if (dataSize >= 0) formatBytes(dataSize) else "calculating...")
             InfoRow("bitcoin.conf", NodePaths.confFile(context).absolutePath, mono = false, truncate = true)
-            SpacerH(8)
-            ActionButton(
-                "COPY BITCOIN.CONF",
-                onClick = { copyToClipboard(context, "bitcoin.conf", NodeConfig.clientConf(config, state.rpcPort)) },
-                modifier = Modifier.fillMaxWidth()
-            )
         }
 
         SpacerH(12)
@@ -155,43 +183,6 @@ fun SettingsScreen(
                 "Pausing sends a graceful stop RPC so the chain state on disk stays consistent.",
                 color = PocketColors.Faint
             )
-        }
-
-        SpacerH(12)
-        CardBox {
-            SectionLabel("RPC access")
-            SpacerH(8)
-            var revealed by remember { mutableStateOf(false) }
-            InfoRow(
-                "Port",
-                if (state.customRpcPort) "${state.rpcPort} (default ${config.network.rpcPort} was busy)" else state.rpcPort.toString(),
-                copyValue = state.rpcPort.toString()
-            )
-            InfoRow("User", config.rpcUser, copyValue = config.rpcUser)
-            InfoRow(
-                "Password",
-                if (revealed) config.rpcPassword else "••••••••••••",
-                copyValue = config.rpcPassword
-            )
-            SpacerH(6)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ActionButton(
-                    if (revealed) "HIDE PASSWORD" else "SHOW PASSWORD",
-                    onClick = { revealed = !revealed },
-                    modifier = Modifier.weight(1f)
-                )
-                ActionButton(
-                    "ROTATE",
-                    onClick = onRotateCredentials,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-            SpacerH(8)
-            Muted("The RPC server binds to 127.0.0.1 only and is never exposed to the network.")
-            state.portNote?.let { note ->
-                SpacerH(8)
-                NoteBanner(note, PocketColors.Warning)
-            }
         }
 
         SpacerH(12)
@@ -246,6 +237,36 @@ fun SettingsScreen(
         }
 
         SpacerH(24)
+    }
+
+    if (confirmFull) {
+        AlertDialog(
+            onDismissRequest = { confirmFull = false },
+            containerColor = PocketColors.CardElevated,
+            titleContentColor = PocketColors.Text,
+            textContentColor = PocketColors.Muted,
+            title = { Text("Keep every block?") },
+            text = {
+                Text(
+                    "This chain was built with pruning, and Bitcoin Core will not re-open it as a " +
+                        "full node. Choosing Full deletes the chain data on this phone and downloads " +
+                        "the whole chain again - about 750-800 GB of storage and a long download."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmFull = false
+                    onRebuildAsFull()
+                }) {
+                    Text("REBUILD AS FULL", color = PocketColors.Warning, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmFull = false }) {
+                    Text("KEEP PRUNED", color = PocketColors.Muted)
+                }
+            }
+        )
     }
 
     if (confirmWipe) {
@@ -495,3 +516,6 @@ private fun DebugLogDialog(onDismiss: () -> Unit) {
         }
     )
 }
+
+/** Rough size of the full mainnet chain, used for the Full storage warning. */
+private const val FULL_CHAIN_BYTES = 800L * 1024L * 1024L * 1024L

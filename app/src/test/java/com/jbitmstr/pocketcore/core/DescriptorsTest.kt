@@ -1,6 +1,7 @@
 package com.jbitmstr.pocketcore.core
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -58,6 +59,43 @@ class DescriptorsTest {
             assertTrue(reason, reason.contains("private key", true) || reason.contains("Private keys", true) ||
                 reason.contains("WIF", true))
         }
+    }
+
+    /**
+     * Regression: the WIF check only matched a bare key, so a private key inside
+     * `pk(...)`, `wpkh(...)` or `tr(...)` was passed on as a descriptor.
+     */
+    @Test
+    fun refusesWifKeysInsideDescriptorFunctions() {
+        val mainnet = "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ"
+        val testnet = "cVpZ2xNBqLw8VHRYcqQ8f3Z5YBGGqjXoYYpE6uNsyXkBTRbXfDSJ"
+        listOf(
+            "wpkh($mainnet)",
+            "pkh($mainnet)",
+            "pk($mainnet)",
+            "tr($mainnet)",
+            "combo($mainnet/0/*)",
+            "sh(wpkh($testnet))",
+            "wsh(pk($mainnet))",
+            "wpkh($mainnet)#8fhd9w27"
+        ).forEach { input ->
+            val parsed = Descriptors.parse(input)
+            assertTrue("should refuse $input", parsed is Descriptors.Parsed.Invalid)
+            val reason = (parsed as Descriptors.Parsed.Invalid).reason
+            assertTrue(reason, reason.contains("WIF"))
+            assertFalse("the key must not be echoed back", reason.contains(mainnet))
+        }
+    }
+
+    /**
+     * The token split must not read an extended public key as a WIF key: this xpub
+     * carries a 'K' with more than 50 base58 characters after it.
+     */
+    @Test
+    fun acceptsExtendedKeysThatCarryBase58LettersOfAWif() {
+        assertTrue(xpub.contains("K"))
+        assertTrue(Descriptors.parse("wpkh($xpub/0/*)") is Descriptors.Parsed.Valid)
+        assertTrue(Descriptors.parse(xpub) is Descriptors.Parsed.Valid)
     }
 
     @Test

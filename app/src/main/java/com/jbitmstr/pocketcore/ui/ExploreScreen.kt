@@ -176,7 +176,7 @@ private fun BlockLookupCard(explorer: ExplorerState, context: android.content.Co
         MonoField(
             value = explorer.blockQuery,
             onValueChange = { ExplorerController.setBlockQuery(it) },
-            placeholder = "Height or block hash",
+            placeholder = "840000  \u00b7  000000000019d668...",
             singleLine = true
         )
         SpacerH(10)
@@ -294,7 +294,7 @@ private fun TransactionCard(explorer: ExplorerState, context: android.content.Co
         MonoField(
             value = explorer.txQuery,
             onValueChange = { ExplorerController.setTxQuery(it) },
-            placeholder = "Transaction id (64 hex)",
+            placeholder = "4a5e1e4baab89f3a...  (64-char txid)",
             singleLine = true,
             showCounter = true
         )
@@ -448,7 +448,7 @@ private fun BroadcastCard(explorer: ExplorerState, context: android.content.Cont
         MonoField(
             value = explorer.broadcastInput,
             onValueChange = { ExplorerController.setBroadcastInput(it) },
-            placeholder = "Raw signed transaction hex",
+            placeholder = "020000000001...  (raw signed tx hex)",
             singleLine = false,
             minLines = 4,
             maxLines = 8,

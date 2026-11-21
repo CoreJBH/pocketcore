@@ -37,6 +37,13 @@ object NodePaths {
 
     fun datadirSizeBytes(context: Context): Long = dataDir(context).directorySize()
 
+    /** Bytes free on the volume that holds the chain, or -1 when unknown. */
+    fun freeSpaceBytes(context: Context): Long = runCatching {
+        android.os.StatFs(filesRoot(context).absolutePath).availableBytes
+    }.getOrDefault(-1L)
+
+    private fun filesRoot(context: Context): File = context.filesDir
+
     /**
      * Reads the last [maxLines] lines of a log without loading the whole file:
      * debug.log grows into tens of megabytes during a sync.

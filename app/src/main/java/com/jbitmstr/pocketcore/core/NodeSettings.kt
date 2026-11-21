@@ -42,10 +42,14 @@ data class NodeSettingsState(
 /**
  * Small persisted settings store. Values are read once and then kept in a
  * StateFlow so the UI and the foreground service always agree.
+ *
+ * The RPC password is kept in [SecretStore]: AES-256-GCM under a Keystore key,
+ * migrated from the plain SharedPreferences value of earlier builds.
  */
 class NodeSettings(context: Context) {
 
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val secrets = SecretStore(prefs)
     private val _state = MutableStateFlow(load())
     val state: StateFlow<NodeSettingsState> = _state
 
@@ -53,8 +57,8 @@ class NodeSettings(context: Context) {
         val user = prefs.getString(KEY_RPC_USER, null) ?: generateToken(16).also {
             prefs.edit().putString(KEY_RPC_USER, it).apply()
         }
-        val password = prefs.getString(KEY_RPC_PASSWORD, null) ?: generateToken(32).also {
-            prefs.edit().putString(KEY_RPC_PASSWORD, it).apply()
+        val password = secrets.read(KEY_RPC_PASSWORD) ?: generateToken(32).also {
+            secrets.write(KEY_RPC_PASSWORD, it)
         }
         return NodeSettingsState(
             network = BitcoinNetwork.fromName(prefs.getString(KEY_NETWORK, null)),
@@ -92,12 +96,14 @@ class NodeSettings(context: Context) {
         putString(KEY_DESCRIPTOR_NORMALIZED, normalized)
     }
 
-    fun rotateCredentials() = edit {
-        putString(KEY_RPC_USER, generateToken(16))
-        putString(KEY_RPC_PASSWORD, generateToken(32))
+    /** A new credential pair, used when an RPC port had to be left to another app. */
+    fun rotateCredentials() {
+        prefs.edit().putString(KEY_RPC_USER, generateToken(16)).apply()
+        secrets.write(KEY_RPC_PASSWORD, generateToken(32))
+        _state.value = load()
     }
 
-    /** Clears node-specific settings but keeps the credential pair. */
+    /** Applies one settings change and republishes the whole state. */
     private fun edit(block: android.content.SharedPreferences.Editor.() -> Unit) {
         prefs.edit().apply(block).apply()
         _state.value = load()

@@ -23,8 +23,18 @@ object Descriptors {
     )
 
     // Base58 WIF: 5... (uncompressed mainnet), K.../L... (compressed mainnet),
-    // 9.../c... (testnet). Checked only for a bare token, never inside a script.
+    // 9.../c... (testnet). Tested on every token of the input, so a key inside a
+    // descriptor function - pk(5Hue...), wpkh(...), tr(5Hue...) - is caught as
+    // well as a bare one.
     private val wifPattern = Regex("^[5KL9c][1-9A-HJ-NP-Za-km-z]{50,51}$")
+
+    /**
+     * Descriptor syntax and checksum separators. Splitting on them keeps a base58
+     * key inside a function a token of its own, and keeps the long letters of an
+     * xpub from being read as one (an xpub is not split, so a 'K' in its middle
+     * cannot start a match).
+     */
+    private val descriptorTokens = Regex("[(),\\[\\]/*:;\"'#\\s]+")
 
     private val bareKeyPattern = Regex("^(xpub|tpub|ypub|zpub|upub|vpub)[1-9A-HJ-NP-Za-km-z]{40,120}$")
 
@@ -43,10 +53,10 @@ object Descriptors {
                     "use the matching xpub/zpub/ypub instead."
             )
         }
-        if (wifPattern.matches(text)) {
+        wifToken(text)?.let {
             return Parsed.Invalid(
-                "That is a WIF private key. Never paste it anywhere: POCKETCORE only needs a public " +
-                    "descriptor or an extended public key."
+                "That contains a WIF private key. Never paste it anywhere: POCKETCORE only needs a " +
+                    "public descriptor or an extended public key."
             )
         }
         if (privateKeyMarkers.any { lowered.startsWith(it) }) {
@@ -69,6 +79,10 @@ object Descriptors {
         }
         return Parsed.Valid(text, null)
     }
+
+    /** The first token of [text] that is a WIF private key, or null. */
+    private fun wifToken(text: String): String? =
+        text.split(descriptorTokens).firstOrNull { wifPattern.matches(it) }
 
     /**
      * A bare extended public key has no script type of its own. The usual

@@ -1,8 +1,11 @@
 package com.jbitmstr.pocketcore.ui
 
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Build
+import android.os.PersistableBundle
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,9 +37,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jbitmstr.pocketcore.core.NodeStatus
 
-fun copyToClipboard(context: Context, label: String, text: String) {
+/**
+ * Copies [text] to the clipboard.
+ *
+ * [isSensitive] marks an RPC password or a wallet conf: from Android 13 the
+ * system then hides the item's preview (and its content) in the clipboard
+ * overlay and keeps it out of the clipboard history, which is what a secret
+ * should never appear in. The flag is ignored on older releases.
+ */
+fun copyToClipboard(context: Context, label: String, text: String, isSensitive: Boolean = false) {
     val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    manager.setPrimaryClip(ClipData.newPlainText(label, text))
+    val clip = ClipData.newPlainText(label, text)
+    if (isSensitive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        clip.description.extras = PersistableBundle().apply {
+            putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+        }
+    }
+    manager.setPrimaryClip(clip)
     Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
 }
 
@@ -162,6 +179,7 @@ fun InfoRow(
     truncate: Boolean = false,
     copyLabel: String? = null,
     copyValue: String? = null,
+    copySensitive: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -171,7 +189,7 @@ fun InfoRow(
             .padding(vertical = 7.dp)
             .then(
                 if (copyValue != null) Modifier.clickable {
-                    copyToClipboard(context, copyLabel ?: label, copyValue)
+                    copyToClipboard(context, copyLabel ?: label, copyValue, copySensitive)
                 } else Modifier
             ),
         verticalAlignment = Alignment.CenterVertically

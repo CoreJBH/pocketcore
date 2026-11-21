@@ -56,8 +56,13 @@ class IpCountryIndex private constructor(
     companion object {
         private const val MAGIC = "PCG3"
 
+        /** Up to 4 groups of 7 bits, i.e. a delta that still fits in 32 bits. */
+        private const val MAX_SHIFT = 28
+
+        private const val MAX_ADDRESS = 0xFFFFFFFFL
+
         fun parse(payload: ByteArray): IpCountryIndex {
-            if (payload.size < 8) return empty()
+            require(payload.size >= 8) { "Truncated country table" }
             require(String(payload, 0, 4, Charsets.US_ASCII) == MAGIC) { "Unknown country table format" }
             var cursor = 4
             val count = (payload[cursor].toInt() and 0xFF) or ((payload[cursor + 1].toInt() and 0xFF) shl 8)
@@ -72,18 +77,26 @@ class IpCountryIndex private constructor(
             val indexes = ArrayList<Byte>(1 shl 18)
             var address = 0L
             while (cursor < payload.size) {
+                // Each record is a varint delta of the range start followed by
+                // one country byte. A damaged table must fail here instead of
+                // walking off the buffer or shifting a delta into nonsense.
                 var shift = 0
-                var delta = 0
+                var delta = 0L
                 while (true) {
+                    require(cursor < payload.size) { "Truncated range delta" }
                     val byte = payload[cursor++].toInt() and 0xFF
-                    delta = delta or ((byte and 0x7F) shl shift)
+                    delta = delta or ((byte and 0x7F).toLong() shl shift)
                     if (byte and 0x80 == 0) break
                     shift += 7
+                    require(shift <= MAX_SHIFT) { "Range delta is too large" }
                 }
-                address += delta.toLong()
+                address += delta
+                require(address <= MAX_ADDRESS) { "Range start is outside the IPv4 space" }
+                require(cursor < payload.size) { "Truncated country byte" }
                 starts.add(address.toInt())
                 indexes.add(payload[cursor++])
             }
+            require(starts.size == indexes.size) { "Truncated country table" }
             return IpCountryIndex(starts.toIntArray(), indexes.toByteArray(), countries)
         }
 

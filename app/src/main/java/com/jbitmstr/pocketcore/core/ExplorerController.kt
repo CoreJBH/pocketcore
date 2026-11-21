@@ -2,6 +2,7 @@ package com.jbitmstr.pocketcore.core
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,6 +40,13 @@ object ExplorerController {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _state = MutableStateFlow(ExplorerState())
     val state: StateFlow<ExplorerState> = _state.asStateFlow()
+
+    // One lookup per area at a time: a second tap or a new query cancels the
+    // previous request, so the answer that lands last is always the one asked
+    // for last.
+    private var blockJob: Job? = null
+    private var txJob: Job? = null
+    private var broadcastJob: Job? = null
 
     fun setBlockQuery(text: String) {
         _state.update { it.copy(blockQuery = text) }
@@ -81,7 +89,8 @@ object ExplorerController {
             _state.update { it.copy(blockError = "Start the node before looking up blocks.", block = null) }
             return
         }
-        scope.launch {
+        blockJob?.cancel()
+        blockJob = scope.launch {
             _state.update { it.copy(blockBusy = true, blockError = null, blockNote = null, blockQuery = text) }
             try {
                 val hash = when {
@@ -160,7 +169,8 @@ object ExplorerController {
             _state.update { it.copy(txError = "Start the node before looking up transactions.", tx = null) }
             return
         }
-        scope.launch {
+        txJob?.cancel()
+        txJob = scope.launch {
             _state.update { it.copy(txBusy = true, txError = null, txNote = null, txQuery = text) }
             try {
                 val json = client.rawTransaction(text, blockHash)
@@ -193,7 +203,8 @@ object ExplorerController {
             _state.update { it.copy(broadcastError = "Start the node before broadcasting.", broadcastTxid = null) }
             return
         }
-        scope.launch {
+        broadcastJob?.cancel()
+        broadcastJob = scope.launch {
             _state.update {
                 it.copy(
                     broadcastBusy = true,
@@ -236,7 +247,7 @@ object ExplorerController {
 
     private fun isPruned(error: RpcException): Boolean {
         val message = error.message.orEmpty()
-        return error.code == -1 && message.contains("pruned", true) ||
+        return (error.code == -1 && message.contains("pruned", true)) ||
             message.contains("Block not available", true)
     }
 

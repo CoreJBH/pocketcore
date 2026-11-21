@@ -84,10 +84,9 @@ object NodeController {
     /** Tail of debug.log searched for the newest header progress line. */
     private const val HEADER_LOG_LINES = 80
 
-    private data class Ports(val rpc: Int, val p2p: Int, val note: String?)
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
+    private val portResolver = PortResolver.live()
 
     private lateinit var appContext: Context
     private lateinit var node: BitcoindNode
@@ -272,28 +271,28 @@ object NodeController {
     /**
      * Wi-Fi only / charging only: a gate closes, the daemon is stopped through
      * the stop RPC; the gate opens again, the daemon is started again.
+     *
+     * The whole evaluation runs under [mutex], together with the state change it
+     * decides on: a start or stop racing with the gate would otherwise leave
+     * [policyPaused] and the daemon disagreeing about who paused what.
      */
     private suspend fun evaluatePolicy() {
-        val config = settings.state.value
-        val gate = gateReason()
-        if (gate != null) {
-            if (node.isAlive()) {
-                mutex.withLock {
-                    if (node.isAlive()) {
-                        policyPaused = true
-                        stopProcess(graceful = true)
+        mutex.withLock {
+            val config = settings.state.value
+            val gate = gateReason()
+            if (gate != null) {
+                if (node.isAlive()) {
+                    policyPaused = true
+                    stopProcess(graceful = true)
+                }
+                if (_state.value.status != NodeStatus.WAITING) {
+                    _state.update {
+                        it.copy(status = NodeStatus.WAITING, detail = gate, config = config)
                     }
                 }
-            }
-            if (_state.value.status != NodeStatus.WAITING) {
-                _state.update {
-                    it.copy(status = NodeStatus.WAITING, detail = gate, config = config)
-                }
-            }
-        } else if (policyPaused && config.shouldRun && !node.isAlive()) {
-            policyPaused = false
-            mutex.withLock {
-                if (!node.isAlive()) beginStartLocked(config)
+            } else if (policyPaused && config.shouldRun && !node.isAlive()) {
+                policyPaused = false
+                beginStartLocked(config)
             }
         }
     }
@@ -303,56 +302,32 @@ object NodeController {
      *
      * A phone can keep an orphan bitcoind alive after the app process died, and
      * another node app may hold the default port. Because `InitHTTPServer()` is
-     * fatal on a busy RPC port, the app resolves this before the daemon starts:
-     * ask the orphan to stop through our own credentials, kill our own strays,
-     * and finally move to the next free port.
+     * fatal on a busy RPC port, the app resolves this before the daemon starts.
+     *
+     * A stop request carries the RPC credentials in Basic Auth, so it is only
+     * ever sent to a daemon of this app: one whose process runs under our UID
+     * (only such processes are visible in /proc here) and whose endpoint is the
+     * one recorded in the bitcoin.conf this app wrote. A port held by anything
+     * else is left untouched and the node moves to a free one with a new
+     * credential pair.
      */
-    private suspend fun resolvePorts(config: NodeSettingsState): Ports {
-        val defaultRpc = config.network.rpcPort
-        val defaultP2p = config.network.p2pPort
-        val notes = ArrayList<String>(2)
-
-        // 1. A busy default RPC port is often our own orphan from a killed app
-        //    process. Ask it to stop, then clear any other stray daemon.
-        if (!PortProbe.isFree(defaultRpc)) {
-            val stoppedHere = RpcClient(defaultRpc, config.rpcUser, config.rpcPassword).stopQuick()
-            if (stoppedHere) PortProbe.awaitFree(defaultRpc, 8_000)
-            if (!PortProbe.isFree(defaultRpc)) {
-                node.killStrayProcesses()
-                PortProbe.awaitFree(defaultRpc, 3_000)
-            }
+    private suspend fun resolvePorts(config: NodeSettingsState): PortResolver.Choice {
+        val ownPids = node.ownDaemonPids()
+        val ownPort = if (ownPids.isEmpty()) null else NodeConfig.readRpcPort(appContext)
+        if (ownPids.isNotEmpty() && ownPort == null) {
+            // A daemon of ours runs but its endpoint is not recorded (no conf
+            // yet): nothing may receive our credentials, so it is killed and
+            // the free port is chosen below.
+            node.killStrayProcesses()
         }
-
-        // 2. The P2P listen port, together with the loopback port Core binds one
-        //    above it. A busy P2P port is not fatal (outbound still works) but a
-        //    clean listen keeps the node reachable for inbound peers.
-        var p2pPort = defaultP2p
-        if (!PortProbe.isFree(p2pPort) || !PortProbe.isFree(p2pPort + 1)) {
-            val chosen = PortProbe.findFreeListenPair(p2pPort, avoid = setOf(defaultRpc))
-            if (chosen != p2pPort) {
-                notes.add("P2P port $p2pPort is in use. Using $chosen for inbound peers.")
-                p2pPort = chosen
-            }
-        }
-
-        // 3. Move the RPC endpoint when something else on the phone keeps it.
-        var rpcPort = defaultRpc
-        val reservedByP2p = rpcPort == p2pPort || rpcPort == p2pPort + 1
-        val rpcTaken = !PortProbe.isFree(rpcPort) || reservedByP2p
-        if (rpcTaken) {
-            val chosen = PortProbe.findFree(rpcPort, avoid = setOf(p2pPort, p2pPort + 1))
-            if (chosen != rpcPort) {
-                notes.add(
-                    if (reservedByP2p) {
-                        "RPC port $rpcPort collides with the P2P listener. POCKETCORE is using port $chosen."
-                    } else {
-                        "RPC port $rpcPort is in use by another process. POCKETCORE is using port $chosen."
-                    }
-                )
-                rpcPort = chosen
-            }
-        }
-        return Ports(rpcPort, p2pPort, notes.joinToString(" ").ifBlank { null })
+        val choice = portResolver.resolve(
+            defaultRpc = config.network.rpcPort,
+            defaultP2p = config.network.p2pPort,
+            ownDaemonRpcPort = ownPort,
+            stopOwnDaemon = { port -> RpcClient(port, config.rpcUser, config.rpcPassword).stopQuick() },
+            killStrays = { node.killStrayProcesses() }
+        )
+        return choice
     }
 
     private suspend fun beginStartLocked(config: NodeSettingsState) {
@@ -381,14 +356,22 @@ object NodeController {
         launchService()
 
         val ports = resolvePorts(config)
-        NodeConfig.write(appContext, config, ports.rpc, ports.p2p)
-        rpc = RpcClient(ports.rpc, config.rpcUser, config.rpcPassword)
+        // A port left to another app means the old pair may have been seen by
+        // something that is not ours: replace it before this start.
+        val activeConfig = if (ports.rotateCredentials) {
+            settings.rotateCredentials()
+            settings.state.value
+        } else {
+            config
+        }
+        NodeConfig.write(appContext, activeConfig, ports.rpc, ports.p2p)
+        rpc = RpcClient(ports.rpc, activeConfig.rpcUser, activeConfig.rpcPassword)
         startedAt = System.currentTimeMillis()
         _state.update {
             it.copy(
                 status = NodeStatus.STARTING,
                 detail = ports.note ?: "Starting bitcoind",
-                config = config,
+                config = activeConfig,
                 effectiveRpcPort = ports.rpc,
                 effectiveP2pPort = ports.p2p,
                 portNote = ports.note
@@ -733,6 +716,7 @@ object NodeController {
                     it.copy(
                         status = NodeStatus.STOPPED,
                         detail = null,
+                        config = settings.state.value,
                         blockchain = null,
                         headerSync = null,
                         network = null,
@@ -751,6 +735,20 @@ object NodeController {
                 onDone(_state.value.message ?: "")
             }
         }
+    }
+
+    /**
+     * Switches to `prune=0` on a phone whose blocks were already pruned.
+     *
+     * Core keeps a flag for "a block file has been deleted" and refuses to open
+     * such a database as an unpruned node ("You need to rebuild the database
+     * using -reindex to go back to unpruned mode"). The chain data is therefore
+     * deleted - SETTINGS asks first - and the next start downloads the chain
+     * again from genesis.
+     */
+    fun rebuildChainAsFull() {
+        settings.setPruneMb(0)
+        wipeNodeData()
     }
 
     fun consumeMessage() {

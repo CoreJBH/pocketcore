@@ -1,6 +1,6 @@
 # Build record
 
-Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 8).
+Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 9).
 
 ## Daemon
 
@@ -31,17 +31,154 @@ BuildID[sha1]=84b79d173e74bd6768165686da839a6ac66267b2, stripped
 | Item | Value |
 | --- | --- |
 | Package | `com.jbitmstr.pocketcore` |
-| Version | 1.0.0 (versionCode 8) |
+| Version | 1.0.0 (versionCode 9) |
 | minSdk / targetSdk | 26 / 35 |
 | APK | `pocketcore-1.0.0-debug.apk` |
-| APK size | 17,061,607 bytes |
-| APK SHA-256 | `da080f626091983f34f3b3bfb3e02039b0ea9e44d9e47904ee02d0a18bd2bffc` |
-| Signing | debug key `f5074815...2aa9c011`, APK Signature Scheme v2 verified, the same key as versionCode 2 to 7 (installs as an update) |
+| APK size | 17,215,853 bytes |
+| APK SHA-256 | `dd58b8b94f2c431db029ea6660da9f089de18ce5869bcdebe7d1412ee239b5e2` |
+| Signing | debug key `f5074815...2aa9c011`, APK Signature Scheme v2 verified, the same key as versionCode 2 to 8 (installs as an update) |
 | Native code in APK | `lib/arm64-v8a/libbitcoind.so`, byte-identical to the stripped daemon (`6becfe26...a8c74f02`) |
 | Offline GeoIP asset | `assets/ipv4_country.bin`, 1,104,026 bytes (559,749 inside the APK), 245 countries, 362,998 ranges |
 | Lint | 0 errors, 16 warnings, 2 information |
-| Unit tests | 65 passing (`NodeModelsTest`, `FormatTest`, `ExplorerModelsTest`, `DescriptorsTest`, `RawTransactionTest`, `IpCountryIndexTest`, `AddressCodecTest`, `PortProbeTest`, `HeaderSyncTest`, `NotificationCardTest`) |
+| Unit tests | 92 passing (`NodeModelsTest` 8, `FormatTest` 5, `ExplorerModelsTest` 8, `DescriptorsTest` 7, `RawTransactionTest` 6, `IpCountryIndexTest` 7, `AddressCodecTest` 5, `PortProbeTest` 4, `HeaderSyncTest` 7, `NotificationCardTest` 11, `PortResolverTest` 7, `ProcScanTest` 5, `RpcAuthTest` 4, `VersionProbeTest` 3, `NodeConfigTest` 5) |
 | zipalign | `zipalign -c -p 4` passes |
+
+### versionCode 9 - the security review: no credentials to a stranger, no credentials on screen
+
+A code review of the whole app produced this build. Nine of the findings were
+security or stability defects in the daemon plumbing; the rest of the work came
+from the phone, where the NODE and SETTINGS screens turned out to carry RPC
+credentials nobody wanted to see, the `bitcoind` row showed a filesystem error
+instead of a version, and the storage card offered no way to keep the full chain.
+
+**The RPC credential leak (the reason this build exists).** `resolvePorts()` used
+to send `stop` - an HTTP Basic Auth call carrying `rpcUser` and `rpcPassword` - to
+whatever process held the default RPC port, before it knew whose process that was.
+A second node app holding 8332 would have received this app's RPC credentials.
+
+- `ProcScan.kt` reads the facts the decision needs out of `/proc`: the real UID of
+  a process (whole tokens - the old `uidLine.contains(uid)` matched UID 101234 for
+  UID 10123) and whether one of its argv entries is `libbitcoind.so`. Android hides
+  other UIDs' processes, so anything this scan can see belongs to this app.
+- `PortResolver.kt` now holds the whole decision, with the probes injected so it is
+  unit tested. Credentials may only go to the port recorded in the `bitcoin.conf`
+  this app wrote for its last start, and only while a daemon of this UID is
+  running; that is how an orphan of a killed app process is still stopped
+  gracefully. A daemon found without a recorded endpoint is killed rather than
+  asked. A port held by anyone else is never contacted: the node moves to a free
+  port and the credential pair is regenerated for that start (Core's stop request
+  is the only place a password is transmitted at all, and now it can only reach
+  our own process).
+- One more hole in the same place: our daemon can sit on a moved port while
+  another app holds the default one, so "a daemon of ours is running" was not
+  proof that the default port was ours. The recorded port closes that.
+- `bitcoind.conf` no longer carries the password. The daemon is given
+  `rpcauth=<user>:<salt>$<hmac>`: a fresh random salt per start and
+  HMAC-SHA256(salt, password), which Core's `CheckUserAuthorized()`
+  (`src/httprpc.cpp` v32.1) recomputes from the plain pair the app sends. The
+  client side is unchanged; the file on disk is a hash.
+- Verified against a real Bitcoin Core 32.1, not just in theory:
+  `tools/verify-rpcauth.py` writes the conf this app generates (one `rpcauth`
+  entry, no `rpcuser`/`rpcpassword`) on regtest, starts the daemon and talks to it
+  with the plain pair - `HTTP 200 chain = regtest` - and gets `HTTP 401` for a
+  wrong password. Core's log confirms `Using rpcauth authentication.`
+- The password itself is now stored by `SecretStore`: AES-256-GCM under a
+  Keystore key (`pocketcore-rpc-credentials`), a fresh IV per write, in
+  `SharedPreferences` under `rpc_password_enc`. The plaintext key of earlier builds
+  is migrated on first read, so an upgrade keeps the same password and the same
+  running daemon. If a device has no usable Keystore the value is written in the
+  clear rather than lost.
+
+**Nothing on screen to copy.** The `LOCAL JSON-RPC` card on NODE and the
+`RPC ACCESS` card on SETTINGS both showed the user, revealed the password on
+request and copied either - and `COPY BITCOIN.CONF` copied the pair too. All of
+it is gone: `NodeScreen` no longer imports `NodeConfig`, `SettingsScreen` no
+longer offers a rotate or copy control, and `NodeConfig.clientConf()` and
+`rpcSnippet()` are removed with them, so no code path in the app can put
+`rpcuser`/`rpcpassword` on the clipboard. Inside the APK that is checkable:
+`classes*.dex` contains `rpcauth=` and no `rpcpassword=`/`rpcuser=` string at
+all. The `copyToClipboard(isSensitive)` flag stays for future sensitive copies
+(Android 13's `EXTRA_IS_SENSITIVE`); the descriptor and debug-log copies still use
+the plain path.
+
+**The NODE screen, cut down to what it is for.** Top to bottom: the block-height
+card, START and STOP (RESTART and the SYNC shortcut are gone; one of the two is
+enabled depending on the state), the peer list, and the node card. The four stat
+tiles (peers, mempool, chain data, uptime) and the RPC card were removed.
+
+**`bitcoind` version.** The node card showed
+`Error: filesystem error: in create_directories: Read-only file system ["/.bitcoin"]`.
+`libbitcoind.so -version` resolves its data directory from `$HOME` before it prints
+anything, and an app process has no writable home. `VersionProbe` now hands the
+process `HOME` = the app's files directory, `TMPDIR` = its cache directory and an
+explicit `-datadir`, and reads the version line out of the output instead of the
+first line. Reproduced on the host: with `HOME=/` the daemon prints the error and
+no version; with the probe's environment it prints
+`Bitcoin Core daemon version v32.1.0 bitcoind`, i.e. `v32.1.0` on screen. A cached
+stamp that holds an error rather than a version is discarded.
+
+**Full chain storage.** The storage card gained `Full` (`prune=0`, every block
+kept) next to 550 MB, 2 GB and 5 GB, with the mainnet requirement spelled out
+(about 750-800 GB, and it has to stay free while the chain is verified) and a
+warning banner when the phone's free space is below it.
+
+Going the other way is not free. Core records that a block file was deleted
+(`m_have_pruned`) once it prunes, and refuses to open such a database unpruned
+(`src/node/chainstate.cpp` v32.1: `m_have_pruned && !options.prune` ->
+"You need to rebuild the database using -reindex to go back to unpruned mode.
+This will redownload the entire blockchain"). A pruned datadir that never grew
+past its target carries no such flag and does switch - checked on a real 32.1,
+where `prune=550` -> `prune=0` on a small regtest chain came up with
+`Setting NODE_NETWORK in non-prune mode`. So the app asks only when the chain is
+already bigger than its prune target: tapping Full then deletes the chain data
+(`NodeController.rebuildChainAsFull()`), which is what `-reindex` would do
+anyway, and the next start downloads the chain from genesis. `NodeConfig.content()` is
+now a pure function so `NodeConfigTest` can assert `prune=0`, `prune=550`,
+`prune=5120`, the `rpcauth` line, the absence of the password and where
+network-only options sit.
+
+**The rest of the review.**
+
+- `evaluatePolicy()` runs entirely under the controller mutex, so `policyPaused`
+  and the daemon can no longer disagree after a gate change races a start.
+- `NodeService` holds its `PARTIAL_WAKE_LOCK` only in STARTING and RUNNING; a node
+  that waits for Wi-Fi or a charger no longer keeps the CPU awake.
+- `ExplorerController` cancels the previous lookup job when a new block,
+  transaction or broadcast starts, and `isPruned()` spells out its parentheses
+  (`(code == -1 && pruned) || "Block not available"`).
+- `IpCountryIndex.parse()` checks the cursor and the varint shift at every step
+  (a truncated table, a varint past 32 bits, a range beyond the IPv4 space and a
+  missing country byte all throw, and the loader falls back to an empty index).
+- `Descriptors` splits a descriptor into tokens and refuses a WIF key inside
+  `pk(...)`, `wpkh(...)`, `tr(...)`, `sh(wpkh(...))` and friends, while an xpub
+  that happens to carry a `K` is still accepted (an xpub is not split).
+- `BitcoindNode.killStrayProcesses()` compares the real UID as a token, so another
+  app's daemon is never killed.
+- `NodeConfig`'s comment no longer claims the ports are passed on the command line
+  (they are not: the file's network section is the only place), and `[testnet4]`
+  is written correctly in it.
+- EXPLORE placeholders show real shapes: `840000 · 000000000019d668...`,
+  `4a5e1e4baab89f3a... (64-char txid)`, `020000000001... (raw signed tx hex)`.
+
+**Tests added** (65 -> 92): `PortResolverTest` (7: the foreign-port bypass is
+asserted to send no stop request, our own daemon is stopped on the port the conf
+records, a stop request that is not answered still clears the stray, P2P pairs,
+the RPC/P2P collision branch), `ProcScanTest` (5: exact UID tokens, argv matching,
+only this UID's daemons, unreadable entries), `RpcAuthTest` (4: the HMAC vectors
+`share/rpcauth/rpcauth.py` produces, the `user:salt$hash` shape, salt characters,
+a fresh salt per start), `VersionProbeTest` (3: version out of a noisy output, a
+cached error rejected, the writable HOME/-datadir command), `NodeConfigTest` (5:
+prune 0/550/5120, no password in the file, ports inside the network section),
+plus `DescriptorsTest` and `IpCountryIndexTest` cases for the new checks.
+
+**Build.** versionCode 9, versionName 1.0.0, same debug key
+`f5074815...2aa9c011` as versionCode 2 to 8 (`apksigner` v2 verified),
+17,215,853 bytes, SHA-256
+`dd58b8b94f2c431db029ea6660da9f089de18ce5869bcdebe7d1412ee239b5e2`, 92 unit tests
+passing, lint 0 errors / 16 warnings, `zipalign -c -p 4` passing,
+`libbitcoind.so` inside the APK still `6becfe26...a8c74f02`. `docs/preview.png`
+still shows the versionCode 8 NODE tab (stat tiles, RPC card); it is replaced from
+a device capture, which this build cannot take.
 
 ### versionCode 8 - the launch halo that is no longer cut, no pulse, and a card signboard
 

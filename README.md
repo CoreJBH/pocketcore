@@ -68,7 +68,7 @@ Every figure on these screens is an RPC answer from the phone's own node.
 
 <table>
   <tr>
-    <td align="center" width="25%"><img src="docs/preview.png" width="180" alt="NODE tab: block height 602,526 of 976,838 headers, 31.79% verifying blocks, 8 peers, local JSON-RPC online on port 8332"></td>
+    <td align="center" width="25%"><img src="docs/preview.png" width="180" alt="NODE tab as captured on versionCode 8, before the versionCode 9 screen: block height 602,526 of 976,838 headers, 31.79% verifying blocks"></td>
     <td align="center" width="25%"><img src="docs/screen-sync.png" width="180" alt="SYNC tab: validated chainstate at 31.76%, AssumeUTXO snapshot picker and pruned storage figures"></td>
     <td align="center" width="25%"><img src="docs/screen-explore.png" width="180" alt="EXPLORE tab: chain status with the best block, block lookup and transaction lookup against this phone's own node"></td>
     <td align="center" width="25%"><img src="docs/screen-settings.png" width="180" alt="SETTINGS tab: network selector, watch-only descriptor field, prune size and data directory paths"></td>
@@ -117,11 +117,16 @@ Every figure on these screens is an RPC answer from the phone's own node.
   a bare xpub/zpub/ypub and scan the UTXO set with `scantxoutset`: confirmed
   balance, addresses and unspent outputs, with no wallet database and no private
   key. Private keys and WIF are refused before anything reaches the node.
-- **Local JSON-RPC access.** The endpoint (`127.0.0.1`, network port, generated
-  user and password) is shown and copyable, along with a `rpcconnect` /
-  `rpcport` / `rpcuser` / `rpcpassword` snippet for external wallets.
-- **Pruned mobile storage.** Default `prune=550`, switchable to 2048 MB or
-  5120 MB. A pruned node still validates every block.
+- **Local JSON-RPC, kept out of sight.** The daemon listens on `127.0.0.1` and
+  authenticates this app only. The RPC pair is generated on the device, sealed
+  with an Android Keystore key and never shown, copied or written in the clear:
+  `bitcoin.conf` carries a salted `rpcauth` hash, not the password.
+- **Two controls on the node screen.** START and STOP, a block-height card, the
+  peer list and one node card - nothing that asks the user to handle a
+  credential.
+- **Pruned or full mobile storage.** Default `prune=550`, switchable to 2048 MB,
+  5120 MB or `Full` (`prune=0`, every block kept: about 750-800 GB on mainnet). A
+  pruned node still validates every block.
 - **AssumeUTXO.** Load a `dumptxoutset` `.dat` file to jump to a recent height in
   minutes; background validation continues from genesis, and both chainstates are
   shown with their own progress.
@@ -188,8 +193,13 @@ app/src/main/java/com/jbitmstr/pocketcore/
   MainActivity.kt              Compose host, notification permission
   core/
     NodePaths.kt               datadir, conf, logs, snapshot directory
-    NodeConfig.kt              bitcoin.conf generation, RPC snippets
+    NodeConfig.kt              bitcoin.conf generation (rpcauth, prune, ports)
     NodeSettings.kt            persisted settings + generated RPC credentials
+    SecretStore.kt             Keystore-sealed storage for the RPC password
+    RpcAuth.kt                 rpcauth salt + HMAC-SHA256 for bitcoin.conf
+    ProcScan.kt                /proc reads: UID and argv of our own processes
+    PortResolver.kt            which port a start gets and who may be asked to stop
+    VersionProbe.kt            daemon version with a writable HOME
     RpcClient.kt               loopback JSON-RPC client
     NodeModels.kt              getblockchaininfo / getnetworkinfo / ... models
     BitcoindNode.kt            child process lifecycle, stray process cleanup
@@ -237,8 +247,8 @@ to upgrade: that deletes `<app files>/node/data`, and the chain has to be
 validated again from the start. A build from another key would only install
 after an uninstall, and none has been published.
 
-The release APK is 17,061,607 bytes with SHA-256
-`da080f626091983f34f3b3bfb3e02039b0ea9e44d9e47904ee02d0a18bd2bffc`; the full
+The release APK is 17,215,853 bytes with SHA-256
+`dd58b8b94f2c431db029ea6660da9f089de18ce5869bcdebe7d1412ee239b5e2`; the full
 build record, including the bundled daemon's own hash, is in
 [docs/BUILD-RECORD.md](docs/BUILD-RECORD.md).
 
@@ -250,9 +260,8 @@ The app owns `<app files>/node/bitcoin.conf` and rewrites it on every start:
 server=1
 daemon=0
 chain=<main|signet|testnet4>
-rpcuser=<generated>
-rpcpassword=<generated>
-prune=550
+rpcauth=<generated user>:<salt>$<hmac-sha256>
+prune=<550 | 2048 | 5120 | 0>
 dbcache=128
 maxconnections=8
 maxmempool=50
@@ -277,8 +286,15 @@ port=<network P2P port>
 The trailing section matters: Bitcoin Core rejects network-specific options such
 as `rpcport`, `rpcbind`, `rpcallowip` and `port` when they appear outside the
 section of the active network. The values written here are the ones the app just
-verified as free, so the daemon and the app always agree on the endpoint (the
-`LOCAL JSON-RPC` card and `COPY WALLET CONF` show the port actually in use).
+verified as free, so the daemon and the app always agree on the endpoint.
+
+The RPC password never reaches this file. `rpcauth` is Core's own scheme: a user,
+a fresh random salt per start, and `HMAC-SHA256(salt, password)`. The password
+itself is stored AES-256-GCM sealed under a key that never leaves the Android
+Keystore, and no screen shows or copies it. A
+port held by another app is never sent the credentials at all: the app locates
+its own daemon through `/proc` and otherwise moves to a free port with a fresh
+pair. `prune=0` means the full chain is kept.
 
 `v2transport` is left at Bitcoin Core 32.1's own default (on), so peers that
 support BIP324 negotiate the encrypted transport; a peer that does not falls
@@ -290,20 +306,15 @@ destination is HTTPS-only.
 ## Talking to the node
 
 ```bash
-curl --user <rpcuser>:<rpcpassword> \
+curl --user <user>:<password> \
   --data-binary '{"jsonrpc":"1.0","id":"pocketcore","method":"getblockchaininfo","params":[]}' \
   -H 'Content-Type: application/json' \
   http://127.0.0.1:8332/
 ```
 
-From a desktop wallet or `bitcoin-cli` on the same phone:
-
-```ini
-rpcconnect=127.0.0.1
-rpcport=8332
-rpcuser=<rpcuser>
-rpcpassword=<rpcpassword>
-```
+`<user>` and `<password>` are the pair the app generated for itself; the app does
+not display or copy them, because nothing on the UI needs them - it is the one
+that talks to the daemon. `bitcoin.conf` stores only the salted hash.
 
 RPC binds to loopback only, so it is reachable from the phone itself and never
 from the local network. There is no wallet RPC surface to expose: the daemon is

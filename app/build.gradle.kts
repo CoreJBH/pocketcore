@@ -12,6 +12,14 @@ android {
         applicationId = "com.jbitmstr.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 9: security and stability review. An RPC port held by
+        // another app no longer receives the app's credentials (a stop request
+        // is only sent to a daemon of this app, found through /proc), the RPC
+        // password is stored with a Keystore key instead of in plain
+        // SharedPreferences and bitcoin.conf now carries rpcauth instead of the
+        // password, sensitive copies are flagged for Android 13, WIF keys inside
+        // descriptor functions are refused, and the policy/wake-lock/
+        // explorer/tables paths were tightened.
         // versionCode 8: the launch-screen halo is no longer clipped. The glow
         // is drawn by the full-window layer as one radial gradient that fades
         // to transparent 150dp out, instead of inside the tile's 120dp box,
@@ -38,7 +46,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 8
+        versionCode = 9
         versionName = "1.0.0"
 
         ndk {

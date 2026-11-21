@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 /** The offline peer-country table: container format, lookup and flags. */
@@ -13,6 +14,15 @@ class IpCountryIndexTest {
      * Three ranges: 1.0.0.0-1.0.0.255 SK, 1.0.1.0-1.0.3.255 CN, everything else
      * unknown. Built with the same record layout the generator writes.
      */
+    private fun expectRejected(payload: ByteArray) {
+        try {
+            IpCountryIndex.parse(payload)
+            fail("a table of ${payload.size} bytes should be rejected")
+        } catch (expected: IllegalArgumentException) {
+            // The loader falls back to an empty index.
+        }
+    }
+
     private fun sampleTable(): IpCountryIndex {
         val countries = listOf("SK", "CN")
         val payload = java.io.ByteArrayOutputStream()
@@ -56,6 +66,69 @@ class IpCountryIndexTest {
         assertEquals("CN", index.countryOf("1.0.3.255"))
         assertNull(index.countryOf("1.0.4.1"))
         assertNull(index.countryOf("8.8.8.8"))
+    }
+
+    /**
+     * A damaged or truncated table fails with an exception the loader turns into
+     * an empty index; it must never read past the buffer or shift a delta into a
+     * past-the-end address.
+     */
+    @Test
+    fun refusesTruncatedOrCorruptTables() {
+        fun header(count: Int): java.io.ByteArrayOutputStream = java.io.ByteArrayOutputStream().apply {
+            write("PCG3".toByteArray(Charsets.US_ASCII))
+            write(count and 0xFF)
+            write((count shr 8) and 0xFF)
+        }
+        /** A table whose declared country count and country bytes can disagree. */
+        fun rawTable(count: Int, tail: ByteArray): ByteArray = header(count).apply { write(tail) }.toByteArray()
+        /** A well formed header and country list, followed by raw range records. */
+        fun table(countries: List<String>, records: ByteArray): ByteArray =
+            header(countries.size).apply {
+                countries.forEach { write(it.toByteArray(Charsets.US_ASCII)) }
+                write(records)
+            }.toByteArray()
+
+        // Shorter than a header.
+        expectRejected(ByteArray(0))
+        expectRejected(ByteArray(4) { 'P'.code.toByte() })
+        // Wrong magic.
+        expectRejected(
+            byteArrayOf(
+                'X'.code.toByte(), 'C'.code.toByte(), 'G'.code.toByte(), '3'.code.toByte(),
+                0, 0, 0, 0
+            )
+        )
+        // Two countries announced, one present.
+        expectRejected(rawTable(2, "SK".toByteArray(Charsets.US_ASCII)))
+        // A range delta whose continuation bytes never end the varint.
+        expectRejected(
+            table(
+                listOf("SK"),
+                byteArrayOf(0x80.toByte(), 0x80.toByte(), 0x80.toByte())
+            )
+        )
+        // A varint that keeps going past a 32 bit value.
+        expectRejected(
+            table(
+                listOf("SK"),
+                byteArrayOf(
+                    0x80.toByte(), 0x80.toByte(), 0x80.toByte(), 0x80.toByte(),
+                    0x80.toByte(), 0x00
+                )
+            )
+        )
+        // A delta that leaves the 32 bit address space.
+        expectRejected(
+            table(
+                listOf("SK"),
+                byteArrayOf(
+                    0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0x1F, 0x00
+                )
+            )
+        )
+        // A delta with no country byte after it.
+        expectRejected(table(listOf("SK"), byteArrayOf(0x01)))
     }
 
     @Test

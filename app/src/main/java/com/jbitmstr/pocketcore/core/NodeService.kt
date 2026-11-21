@@ -61,7 +61,7 @@ class NodeService : Service() {
         NodeController.init(applicationContext)
         createChannel()
         startForeground(NOTIFICATION_ID, buildNotification(NodeController.state.value))
-        acquireWakeLock()
+        syncWakeLock(NodeController.state.value.status)
         registerReceivers()
         observeState()
     }
@@ -74,6 +74,7 @@ class NodeService : Service() {
             return START_NOT_STICKY
         }
         updateNotification(NodeController.state.value)
+        syncWakeLock(NodeController.state.value.status)
         if (NodeController.settings.state.value.shouldRun &&
             NodeController.state.value.status == NodeStatus.STOPPED
         ) {
@@ -87,7 +88,21 @@ class NodeService : Service() {
         scope.launch {
             NodeController.state.collect { state ->
                 updateNotification(state)
+                syncWakeLock(state.status)
             }
+        }
+    }
+
+    /**
+     * The partial wake lock exists to keep the daemon working (syncing, RPC) while
+     * the screen is off. A node that is only waiting for Wi-Fi or a charger has
+     * nothing to run, so the lock is dropped in every state but STARTING and
+     * RUNNING and taken again when the daemon comes back.
+     */
+    private fun syncWakeLock(status: NodeStatus) {
+        when (status) {
+            NodeStatus.STARTING, NodeStatus.RUNNING -> acquireWakeLock()
+            else -> releaseWakeLock()
         }
     }
 
@@ -170,11 +185,18 @@ class NodeService : Service() {
 
     @android.annotation.SuppressLint("WakelockTimeout")
     private fun acquireWakeLock() {
+        val current = wakeLock
+        if (current != null && current.isHeld) return
         val power = getSystemService(PowerManager::class.java) ?: return
         val lock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "pocketcore:node")
         lock.setReferenceCounted(false)
         lock.acquire()
         wakeLock = lock
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
     }
 
     private fun registerReceivers() {
@@ -203,8 +225,7 @@ class NodeService : Service() {
             receiverRegistered = false
         }
         runCatching { connectivityManager?.unregisterNetworkCallback(networkCallback) }
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wakeLock = null
+        releaseWakeLock()
         super.onDestroy()
     }
 

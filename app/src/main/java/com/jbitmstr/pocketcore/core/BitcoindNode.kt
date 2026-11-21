@@ -35,7 +35,7 @@ class BitcoindNode(private val context: Context) {
             val cmdline = runCatching {
                 File(entry, "cmdline").readBytes().toString(Charsets.UTF_8)
             }.getOrNull() ?: continue
-            if (!cmdline.contains(NodePaths.BINARY_NAME)) continue
+            if (!ProcScan.runsBinary(cmdline, NodePaths.BINARY_NAME)) continue
             if (fallback == null) fallback = pid
             val parent = runCatching {
                 File(entry, "status").readLines().firstOrNull { it.startsWith("PPid:") }
@@ -115,24 +115,17 @@ class BitcoindNode(private val context: Context) {
      * Such a stray instance still holds the datadir lock and the RPC port, so
      * it is terminated before a new one starts.
      *
+     * Every kill is limited to processes of this app's UID (see [ProcScan]):
+     * another node app's daemon is not ours to touch.
+     *
      * The `.lock` file is deliberately left alone: it is a POSIX record lock, a
      * leftover file is harmless, and deleting it while a live daemon still owns
      * it lets a second daemon start on the same data directory.
      */
     fun killStrayProcesses(exclude: Int? = null): List<Int> {
-        val myPid = android.os.Process.myPid()
-        val killed = ArrayList<Int>()
-        val entries = File("/proc").listFiles { file -> file.name.all(Char::isDigit) } ?: return killed
-        for (entry in entries) {
-            val pid = entry.name.toIntOrNull() ?: continue
-            if (pid == myPid || pid == exclude) continue
-            val cmdline = runCatching {
-                File(entry, "cmdline").readBytes().toString(Charsets.UTF_8)
-            }.getOrNull() ?: continue
-            if (!cmdline.contains(NodePaths.BINARY_NAME)) continue
-            val status = runCatching { File(entry, "status").readLines() }.getOrNull() ?: continue
-            val uidLine = status.firstOrNull { it.startsWith("Uid:") } ?: continue
-            if (!uidLine.contains(android.os.Process.myUid().toString())) continue
+        val pids = ownDaemonPids(exclude)
+        val killed = ArrayList<Int>(pids.size)
+        for (pid in pids) {
             if (runCatching { android.os.Process.killProcess(pid) }.isSuccess) killed.add(pid)
         }
         if (killed.isNotEmpty()) {
@@ -145,30 +138,57 @@ class BitcoindNode(private val context: Context) {
         return killed
     }
 
-    private fun isAlivePid(pid: Int): Boolean = File("/proc/$pid").exists() &&
-        runCatching { File("/proc/$pid/cmdline").readText() }.getOrNull()?.contains(NodePaths.BINARY_NAME) == true
+    /**
+     * PIDs of daemon processes running under this app's UID, including an orphan
+     * left behind by a killed app process and excluding this process itself.
+     */
+    fun ownDaemonPids(exclude: Int? = null): List<Int> {
+        val skip = buildSet {
+            add(android.os.Process.myPid())
+            if (exclude != null) add(exclude)
+        }
+        return ProcScan.daemonPids(
+            procRoot = File("/proc"),
+            binaryName = NodePaths.BINARY_NAME,
+            uid = android.os.Process.myUid(),
+            exclude = skip
+        )
+    }
 
-    /** Version reported by the bundled binary (first line of -version). */
+    /** True when a daemon of this app is already running somewhere on the phone. */
+    fun ownDaemonRunning(): Boolean = ownDaemonPids().isNotEmpty()
+
+    private fun isAlivePid(pid: Int): Boolean = File("/proc/$pid").exists() &&
+        runCatching { File("/proc/$pid/cmdline").readBytes().toString(Charsets.UTF_8) }
+            .getOrNull()?.let { ProcScan.runsBinary(it, NodePaths.BINARY_NAME) } == true
+
+    /** Version reported by the bundled binary, e.g. "v32.1.0". */
     fun version(): String {
         val cached = NodePaths.binaryVersionStamp(context)
         if (cached.exists()) {
             val text = cached.readText().trim()
-            if (text.isNotEmpty()) return text
+            if (VersionProbe.isVersion(text)) return text
+            // An earlier build could cache the daemon's error line here instead
+            // of a version; it is no longer trusted.
+            runCatching { cached.delete() }
         }
         val detected = runCatching {
-            val proc = ProcessBuilder(binary.absolutePath, "-version")
-                .redirectErrorStream(true)
-                .start()
-            val line = proc.inputStream.bufferedReader().use { reader ->
-                reader.lineSequence().firstOrNull() ?: ""
-            }
+            val builder = ProcessBuilder(
+                VersionProbe.command(binary.absolutePath, NodePaths.root(context))
+            )
+            builder.redirectErrorStream(true)
+            builder.environment().putAll(
+                VersionProbe.environment(builder.environment(), context.filesDir, context.cacheDir)
+            )
+            val proc = builder.start()
+            val output = proc.inputStream.bufferedReader().use { reader -> reader.readText() }
             proc.waitFor(5, TimeUnit.SECONDS)
-            line.trim()
-        }.getOrDefault("")
-        if (detected.isNotEmpty()) {
+            VersionProbe.parse(output)
+        }.getOrNull()
+        if (!detected.isNullOrBlank()) {
             runCatching { cached.writeText(detected) }
         }
-        return detected
+        return detected.orEmpty()
     }
 
     /** Last lines the daemon wrote to stdout/stderr. */

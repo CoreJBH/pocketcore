@@ -72,9 +72,7 @@ fun PocketCoreApp() {
                 0 -> NodeScreen(
                     state = state,
                     onStart = { force -> NodeController.start(force) },
-                    onStop = { NodeController.stop() },
-                    onRestart = { NodeController.restart() },
-                    onOpenSync = { tab = 1 }
+                    onStop = { NodeController.stop() }
                 )
                 1 -> SyncScreen(
                     state = state,
@@ -105,10 +103,7 @@ fun PocketCoreApp() {
                         NodeController.settings.setChargingOnly(value)
                         NodeController.applySettingsAndMaybeRestart(restartIfRunning = false)
                     },
-                    onRotateCredentials = {
-                        NodeController.settings.rotateCredentials()
-                        NodeController.applySettingsAndMaybeRestart()
-                    },
+                    onRebuildAsFull = { NodeController.rebuildChainAsFull() },
                     onWipeData = { NodeController.wipeNodeData() }
                 )
             }
