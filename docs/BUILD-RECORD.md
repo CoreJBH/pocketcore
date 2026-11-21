@@ -1,6 +1,6 @@
 # Build record
 
-Recorded on 2026-11-20 while producing `pocketcore-1.0.0-debug.apk`.
+Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 6).
 
 ## Daemon
 
@@ -31,17 +31,80 @@ BuildID[sha1]=84b79d173e74bd6768165686da839a6ac66267b2, stripped
 | Item | Value |
 | --- | --- |
 | Package | `com.jbitmstr.pocketcore` |
-| Version | 1.0.0 (versionCode 5) |
+| Version | 1.0.0 (versionCode 6) |
 | minSdk / targetSdk | 26 / 35 |
 | APK | `pocketcore-1.0.0-debug.apk` |
-| APK size | 17,151,385 bytes |
-| APK SHA-256 | `0c6a71f59d3972239957355ce0077b5241ec2752d364c9986ae5a7805ac201a3` |
-| Signing | debug key `f5074815...2aa9c011`, APK Signature Scheme v2 verified, the same key as versionCode 2, 3 and 4 (installs as an update) |
+| APK size | 16,904,831 bytes |
+| APK SHA-256 | `9e5872dd92d3568be9f45f70df6b54fc7679abbda529950bdbd21e7383812704` |
+| Signing | debug key `f5074815...2aa9c011`, APK Signature Scheme v2 verified, the same key as versionCode 2 to 5 (installs as an update) |
 | Native code in APK | `lib/arm64-v8a/libbitcoind.so`, byte-identical to the stripped daemon (`6becfe26...a8c74f02`) |
 | Offline GeoIP asset | `assets/ipv4_country.bin`, 1,104,026 bytes (559,749 inside the APK), 245 countries, 362,998 ranges |
 | Lint | 0 errors, 16 warnings, 2 information |
 | Unit tests | 65 passing (`NodeModelsTest`, `FormatTest`, `ExplorerModelsTest`, `DescriptorsTest`, `RawTransactionTest`, `IpCountryIndexTest`, `AddressCodecTest`, `PortProbeTest`, `HeaderSyncTest`, `NotificationCardTest`) |
 | zipalign | `zipalign -c -p 4` passes |
+
+### versionCode 6 - tesseract launcher icon
+
+After the versionCode 5 build the icon was replaced for the fourth time; the
+final pick is `downloads/pocketcore-icon-tesseract2.png` - an isometric
+tesseract (a cyan cube frame around a smaller cube with a glowing blue core) on
+the deep navy field `#030B27`, with no coin glyph anywhere.
+
+**Launcher.** `tools/generate-icons.py` now reads that file. The mark measures
+510 x 609 px at 372, 313 - 881, 921 in the 1254 px artwork, is cropped to a
+621 px square around it (ratio 0.9807) and drawn at exactly 50% of the 108dp
+canvas height, i.e. 54dp. The adaptive foreground is a real alpha layer: each
+pixel keeps its artwork colour and gets the coverage that recreates it over the
+field (solved against a white ceiling, so nothing is clipped or flattened onto
+one ink colour). Compositing the saved layer back over `#030B27` reproduces the
+crop with a mean error of 0.50/255, p99.9 of 2.0 and no channel above 5/255.
+`ic_launcher_background` moved from `#010817` to `#030B27` so the glow fades
+into the same navy the artwork was drawn on instead of a slightly different
+square. The legacy `ic_launcher.png` / `ic_launcher_round.png` keep the opaque
+field. On mdpi only, the alpha is lifted with a 0.85 gamma, because a 48dp icon
+on a 160dpi screen gives the ~1.5dp frame lines barely half a pixel each; the
+mark's shape and box are unchanged.
+
+`tools/check-icon-safezone.py` reproduces the launcher for every density under
+the circle, squircle and rounded-square masks, with and without a 1.08 parallax
+zoom, and reports **0 clipped mark pixels**.
+
+| Density | Canvas | Mark box (visible 72dp window) | Margin to the window edge |
+| --- | --- | --- | --- |
+| mdpi | 108 | 13, 9 - 57, 61 | 13.0 / 9.0 / 14.0 / 10.0 dp |
+| hdpi | 162 | 20, 13 - 87, 93 | 13.3 / 8.7 / 13.3 / 9.3 dp |
+| xhdpi | 216 | 27, 18 - 116, 125 | 13.5 / 9.0 / 13.5 / 9.0 dp |
+| xxhdpi | 324 | 40, 27 - 174, 188 | 13.3 / 9.0 / 13.7 / 9.0 dp |
+| xxxhdpi | 432 | 54, 37 - 233, 251 | 13.5 / 9.3 / 13.5 / 9.0 dp |
+
+**Themed icon.** `drawable-nodpi/ic_launcher_monochrome.png` is the same alpha
+layer in white, so Android 13+ tints the tesseract itself instead of a pasted
+square (no glyph to remove: the artwork never had one).
+
+**Splash.** `drawable-nodpi/splash_icon.png` is a 512 px raster tile: the
+`#030B27` field with the mark at 48.6% of the tile, corners rounded at 26/96 -
+the same radius `SplashScreen.kt` clips the 96dp box with, so the raster edge
+and the Compose clip land on the same curve. It is still a plain PNG; nothing
+references `R.mipmap.ic_launcher` from the splash.
+
+**Notification.** `drawable/ic_stat_node.xml` was redrawn as the tesseract
+silhouette: the outer cube frame (1.25dp), the inner cube frame (1.15dp) and the
+six edges joining their corners (1.0dp, round caps). The core glow cannot exist
+in a tinted status-bar glyph, so the middle stays open. App code did not change:
+`NodeService` still calls `setSmallIcon(R.drawable.ic_stat_node)`, and
+`SplashScreen`, the theme, the insets and every feature are untouched.
+
+**Build.** `tools/build.sh` now passes `-Duser.home=/workspace` to Gradle. This
+container has no passwd entry for the build user, so the JVM reported
+`user.home` as `?` and the debug signing config looked for
+`app/?/.android/debug.keystore`; pinning it keeps the build on the existing
+`~/.android/debug.keystore` and therefore the same signing key. Verified on this
+build: 65 unit tests passing, lint 0 errors / 16 warnings, `assembleDebug`,
+`apksigner verify` - v2 scheme true, certificate `f5074815...2aa9c011`,
+`zipalign -c -p 4` passing. The APK shrank from 17,151,385 to 16,904,831 bytes
+because the new icon assets compress better; `libbitcoind.so` inside the APK is
+still `6becfe26...a8c74f02`, and the icons inside the APK are pixel-identical to
+the files in `res/`.
 
 ### versionCode 5 - notification card layout
 

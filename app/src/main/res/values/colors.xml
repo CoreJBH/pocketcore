@@ -2,6 +2,8 @@
     <color name="background">#050912</color>
     <color name="card">#0B1220</color>
     <color name="accent">#38BDF8</color>
-    <!-- Field color of the launcher art, used as the adaptive icon background. -->
-    <color name="ic_launcher_background">#010817</color>
+    <!-- Field color of the launcher art (pocketcore-icon-tesseract2.png), used
+         as the adaptive icon background so the core's glow fades into the same
+         navy the artwork was drawn on. -->
+    <color name="ic_launcher_background">#030B27</color>
 </resources>

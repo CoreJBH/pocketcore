@@ -21,7 +21,16 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 RES = ROOT / "app" / "src" / "main" / "res"
+FIELD = (3, 11, 39)     # #030B27, the artwork field the launcher paints behind the mark
 FIELD_LUMA = 30
+
+
+def on_field(path: Path) -> Image.Image:
+    """The foreground layer as the launcher paints it: alpha over the field."""
+    layer = Image.open(path).convert("RGBA")
+    canvas = Image.new("RGB", layer.size, FIELD)
+    canvas.paste(layer.convert("RGB"), (0, 0), layer)
+    return canvas
 
 
 def masks(size: int):
@@ -68,7 +77,7 @@ def visible_window(image: Image.Image, zoom: float, canvas_dp: int = 108, visibl
 
 def check(density: str, zoom: float = 1.0, canvas_dp: int = 108, visible_dp: int = 72) -> dict:
     path = RES / f"mipmap-{density}" / "ic_launcher_foreground.png"
-    image = Image.open(path).convert("RGB")
+    image = on_field(path)
     size = image.width
     window, visible = visible_window(image, zoom, canvas_dp, visible_dp)
     luma = np.asarray(window.convert("L")).astype(int)
@@ -90,7 +99,7 @@ def check(density: str, zoom: float = 1.0, canvas_dp: int = 108, visible_dp: int
 
 def preview() -> None:
     """Compose the icon under each mask, plus the visible-window view."""
-    foreground = Image.open(RES / "mipmap-xxxhdpi" / "ic_launcher_foreground.png").convert("RGB")
+    foreground = on_field(RES / "mipmap-xxxhdpi" / "ic_launcher_foreground.png")
     window, visible = visible_window(foreground, 1.0)
 
     tile = 320
@@ -99,7 +108,7 @@ def preview() -> None:
     shapes = []
     for name in ("circle", "squircle", "roundedsquare"):
         mask = Image.fromarray((masks(tile)[name] * 255).astype("uint8"))
-        canvas = Image.new("RGB", (tile, tile), (60, 72, 96))
+        canvas = Image.new("RGB", (tile, tile), (40, 46, 58))
         canvas.paste(big, (0, 0), mask)
         shapes.append((name, canvas))
 

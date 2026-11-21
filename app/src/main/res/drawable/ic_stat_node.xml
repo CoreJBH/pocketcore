@@ -5,7 +5,27 @@
     android:viewportWidth="24"
     android:viewportHeight="24"
     android:tint="#FFFFFF">
+    <!-- The launcher mark reduced to a single-colour silhouette: the isometric
+         tesseract of pocketcore-icon-tesseract2.png - the outer cube frame, the
+         smaller inner cube, and the six edges that join their corners. The core
+         glow cannot exist in a tinted status-bar glyph, so the middle stays
+         open and the two frames carry the shape. -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M12,2.2 L20.2,6.9 L20.2,16.3 L12,21 L3.8,16.3 L3.8,6.9 Z M12,5.4 L5.9,8.9 L5.9,14.4 L12,17.9 L18.1,14.4 L18.1,8.9 Z M12,8.6 L14.8,12 L12,15.4 L9.2,12 Z" />
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.25"
+        android:strokeLineJoin="round"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M12,2.7 L20.05,7.35 L20.05,16.65 L12,21.3 L3.95,16.65 L3.95,7.35 Z" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.15"
+        android:strokeLineJoin="round"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M12,7.3 L16.07,9.65 L16.07,14.35 L12,16.7 L7.93,14.35 L7.93,9.65 Z" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.0"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M12,2.7 L12,7.3 M20.05,7.35 L16.07,9.65 M20.05,16.65 L16.07,14.35 M12,21.3 L12,16.7 M3.95,16.65 L7.93,14.35 M3.95,7.35 L7.93,9.65" />
 </vector>

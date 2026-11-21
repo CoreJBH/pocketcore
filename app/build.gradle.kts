@@ -12,6 +12,10 @@ android {
         applicationId = "com.jbitmstr.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 6: launcher, themed-icon, splash and notification art
+        // redrawn from pocketcore-icon-tesseract2.png - the isometric tesseract
+        // with a glowing core, nothing else inside. The adaptive foreground is
+        // now a real alpha layer over the #030B27 field.
         // versionCode 5: notification card rebuilt to the node-app layout of the
         // reference (Mandacaru): single small icon on the left (no large icon),
         // state in the header row, app-style timestamp, ocean blue when caught up,
@@ -24,7 +28,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 5
+        versionCode = 6
         versionName = "1.0.0"
 
         ndk {

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/icon.png" width="130" alt="POCKETCORE icon: white Bitcoin mark inside a cyan hexagonal frame on deep navy">
+  <img src="docs/icon.png" width="130" alt="POCKETCORE icon: an isometric cyan tesseract with a glowing blue core, on deep navy">
 </p>
 
 <h1 align="center">POCKETCORE</h1>
@@ -72,7 +72,7 @@ one first.
   data directory and ports.
 - **Background policy.** "Wi-Fi only" and "Charging only" pause the node (graceful
   `stop` RPC) and start it again when the condition returns.
-- **Animated launch screen.** A 1.1 s midnight-blue splash with the hexagon coin
+- **Animated launch screen.** A 1.1 s midnight-blue splash with the tesseract
   mark easing in, pulsing once and fading into the dashboard.
 - **Colorized status card.** The foreground service notification is a colorized
   card in the app's own blues, laid out like the node apps it is compared with:
