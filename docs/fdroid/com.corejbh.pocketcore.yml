@@ -14,7 +14,7 @@ Repo: https://github.com/CoreJBH/pocketcore.git
 Builds:
   - versionName: 1.0.0
     versionCode: 10
-    commit: __COMMIT__
+    commit: 6fafa4a3ad0794a61dc620d0636ccf3997f913c0
     timeout: 14400
     ndk: 30.0.16248370
     sudo:
