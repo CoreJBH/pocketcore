@@ -188,8 +188,8 @@ verify-english.py              fails if any non-English text enters the repo
    the current height while the node syncs.
 
 Debug-signed: reinstalling a newer build requires removing the previous one.
-The release APK is 17,151,385 bytes with SHA-256
-`0c6a71f59d3972239957355ce0077b5241ec2752d364c9986ae5a7805ac201a3`; the full
+The release APK is 17,060,531 bytes with SHA-256
+`dd44e23b09a81cfc0690c1f9603b52c5c28c7d7c5203520719cb93adf33ec23c`; the full
 build record, including the bundled daemon's own hash, is in
 [docs/BUILD-RECORD.md](docs/BUILD-RECORD.md).
 
