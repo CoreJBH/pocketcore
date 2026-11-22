@@ -43,7 +43,12 @@ data class BlockInfo(
                 weight = json.optLongOrNull("weight"),
                 txCount = json.optInt("nTx", transactions?.length() ?: 0),
                 headerOnly = false,
-                transactions = TxSummary.list(transactions)
+                // Every transaction listed here is part of this confirmed block:
+                // `getblock` does not repeat the block hash or the confirmation
+                // count inside each entry, so [TxSummary.from] alone would read
+                // them as mempool transactions and the explorer would label a
+                // block's contents "MEMPOOL".
+                transactions = TxSummary.list(transactions).map { it.copy(inMempool = false) }
             )
         }
 

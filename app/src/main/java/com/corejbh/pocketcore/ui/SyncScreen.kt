@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,7 +33,9 @@ fun SyncScreen(
     state: NodeUiState,
     onPickSnapshot: (Uri, String?) -> Unit,
     onLoadSnapshot: () -> Unit,
-    onClearSnapshot: () -> Unit
+    onClearSnapshot: () -> Unit,
+    onExportSnapshot: (Uri, String?) -> Unit,
+    onClearExport: () -> Unit
 ) {
     val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(
@@ -42,6 +45,18 @@ fun SyncScreen(
             val name = queryDisplayName(context, uri)
             onPickSnapshot(uri, name)
         }
+    }
+    // A snapshot written by this node: the name suggests what the file is, and
+    // the user can still rename it in the system picker.
+    val exportName = remember(state.config.network, state.blocks) {
+        val day = java.time.LocalDate.now()
+            .format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE)
+        "pocketcore-${state.config.network.chainArg}-${state.blocks}-$day.dat"
+    }
+    val creator = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri: Uri? ->
+        if (uri != null) onExportSnapshot(uri, queryDisplayName(context, uri) ?: exportName)
     }
 
     Column(
@@ -189,6 +204,15 @@ fun SyncScreen(
                     "while the node is below the snapshot height.",
                 color = PocketColors.Faint
             )
+
+            SpacerH(14)
+            Divider()
+            SpacerH(12)
+            ExportSnapshotSection(
+                state = state,
+                onExport = { creator.launch(exportName) },
+                onClearExport = onClearExport
+            )
         }
 
         SpacerH(12)
@@ -209,6 +233,80 @@ fun SyncScreen(
         }
 
         SpacerH(24)
+    }
+}
+
+/**
+ * `dumptxoutset` for this node: writes the current UTXO set and hands it to the
+ * file the user picked.
+ *
+ * Disabled unless the node is running and no snapshot is being imported or
+ * exported, because Core is busy with the dump while it runs.
+ */
+@Composable
+private fun ExportSnapshotSection(
+    state: NodeUiState,
+    onExport: () -> Unit,
+    onClearExport: () -> Unit
+) {
+    val export = state.snapshotExport
+    SectionLabel("Export this node's snapshot")
+    SpacerH(8)
+    Muted(
+        "Bitcoin Core writes this node's current UTXO set to a .dat file (dumptxoutset). Another " +
+            "device - or this one after its data is deleted - can then start from LOAD SNAPSHOT " +
+            "instead of downloading every block from genesis. The snapshot is written inside the " +
+            "app first and copied to the file you pick; it never leaves the phone."
+    )
+    SpacerH(10)
+    ActionButton(
+        if (export.busy) "EXPORTING..." else "EXPORT SNAPSHOT",
+        onClick = onExport,
+        modifier = Modifier.fillMaxWidth(),
+        filled = true,
+        enabled = state.status == NodeStatus.RUNNING && !state.snapshot.busy && !export.busy
+    )
+
+    if (export.busy) {
+        SpacerH(10)
+        Muted(export.stage ?: "Working...", color = PocketColors.Accent, size = 11)
+        SpacerH(4)
+        Muted(
+            "The dump runs inside the node and takes minutes on a phone. The node stays online " +
+                "and keeps validating while it works.",
+            color = PocketColors.Faint
+        )
+    }
+
+    export.dump?.let { dump ->
+        SpacerH(12)
+        InfoRow("Exported file", export.fileName ?: "-", mono = false, truncate = true)
+        InfoRow("File size", export.bytesWritten?.let { formatBytes(it) } ?: "-")
+        InfoRow("Base height", formatCount(dump.baseHeight), mono = true)
+        InfoRow("Coins written", formatCount(dump.coinsWritten), mono = true)
+        InfoRow("Transactions to base", formatCount(dump.chainTx), mono = true)
+        InfoRow("UTXO set hash", shortHash(dump.txoutsetHash), mono = true, truncate = true)
+        SpacerH(8)
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(PocketColors.CardElevated)
+                .padding(10.dp)
+        ) {
+            Text(text = dump.summary(), color = PocketColors.Running, fontSize = 11.sp)
+        }
+        if (dump.baseHash.isNotEmpty()) {
+            SpacerH(6)
+            Muted("Base block ${shortHash(dump.baseHash)}", color = PocketColors.Faint)
+        }
+        SpacerH(8)
+        ActionButton("CLEAR EXPORT", onClick = onClearExport, modifier = Modifier.fillMaxWidth())
+    }
+
+    export.error?.let { error ->
+        SpacerH(12)
+        NoteBanner(error, PocketColors.Error)
     }
 }
 

@@ -7,16 +7,66 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// Release signing is read from keystore/keystore.properties, which is never
-// committed. A fresh clone or CI checkout without that file still builds every
-// variant; only the release bundle is left unsigned there.
+// Release signing is read from keystore/keystore.properties (never committed)
+// or, for a CI checkout, from the environment. It is deliberately strict: a
+// release artifact that cannot be signed fails the build instead of being
+// written unsigned, and nothing falls back to the debug key - an APK signed
+// with that key would install over nobody's app while looking like a release.
+// Code checks (lint, unit tests) still run without any signing material.
 val keystorePropertiesFile = rootProject.file("keystore/keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.exists()) {
         keystorePropertiesFile.inputStream().use { load(it) }
     }
 }
-val hasReleaseKeystore = keystorePropertiesFile.exists()
+
+fun signingValue(propertyKey: String, environmentKey: String): String? =
+    keystoreProperties.getProperty(propertyKey)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(environmentKey)?.takeIf { it.isNotBlank() }
+
+val releaseStoreFile = signingValue("storeFile", "POCKETCORE_KEYSTORE_FILE")
+val releaseStorePassword = signingValue("storePassword", "POCKETCORE_KEYSTORE_PASSWORD")
+val releaseKeyAlias = signingValue("keyAlias", "POCKETCORE_KEY_ALIAS")
+val releaseKeyPassword = signingValue("keyPassword", "POCKETCORE_KEY_PASSWORD")
+
+// A storeFile that is named but not on disk is a broken configuration, not a
+// reason to continue without one.
+val releaseKeystorePresent = releaseStoreFile?.let { rootProject.file(it).isFile } == true
+val missingReleaseSigning = buildList {
+    if (releaseStoreFile == null) add("storeFile (POCKETCORE_KEYSTORE_FILE)")
+    if (releaseStorePassword == null) add("storePassword (POCKETCORE_KEYSTORE_PASSWORD)")
+    if (releaseKeyAlias == null) add("keyAlias (POCKETCORE_KEY_ALIAS)")
+    if (releaseKeyPassword == null) add("keyPassword (POCKETCORE_KEY_PASSWORD)")
+    val allValuesGiven = releaseStoreFile != null && releaseStorePassword != null &&
+        releaseKeyAlias != null && releaseKeyPassword != null
+    if (allValuesGiven && !releaseKeystorePresent) {
+        add("the keystore file at $releaseStoreFile")
+    }
+}
+val hasReleaseKeystore = missingReleaseSigning.isEmpty()
+
+// Tasks that write a release artifact, and therefore need the signature. Lint
+// and unit tests are left out on purpose: they check code and sign nothing.
+fun taskNeedsReleaseSignature(request: String): Boolean {
+    val task = request.substringAfterLast(':').lowercase()
+    val codeCheck = task.startsWith("lint") || task.startsWith("test") ||
+        task.startsWith("connected") || task.startsWith("dependencies") ||
+        task.startsWith("dependency") || task == "tasks" || task == "help"
+    if (codeCheck) return false
+    return task.contains("release") || task in setOf(
+        "assemble", "bundle", "build", "install", "publish", "package", "sign"
+    )
+}
+
+if (!hasReleaseKeystore && gradle.startParameter.taskNames.any { taskNeedsReleaseSignature(it) }) {
+    throw GradleException(
+        "Release signing is not configured (missing: ${missingReleaseSigning.joinToString(", ")}). " +
+            "Put storeFile, storePassword, keyAlias and keyPassword in " +
+            "keystore/keystore.properties, or set POCKETCORE_KEYSTORE_FILE, " +
+            "POCKETCORE_KEYSTORE_PASSWORD, POCKETCORE_KEY_ALIAS and POCKETCORE_KEY_PASSWORD. " +
+            "A release build is not produced unsigned, and never with the debug key."
+    )
+}
 
 // The bundled daemon's SHA-256, taken from the file this APK ships.
 //
@@ -44,6 +94,15 @@ android {
         applicationId = "com.corejbh.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 13: third security review. The RPC credentials are handed
+        // only to a listener proved to be this daemon (an unreadable /proc entry
+        // is a refusal now, not a guess), the watch-only descriptor is encrypted
+        // at rest like the RPC password, a sensitive copy on Android 12 and below
+        // is cleared from their clipboard after a minute, a failed HTTP exchange
+        // no longer shares RPC_MISC_ERROR's code (and -28 keeps the node in its
+        // warm-up state), a block's transactions are no longer labelled MEMPOOL,
+        // the storage card measures the selected network only, and a release that
+        // cannot be signed fails the build instead of shipping unsigned.
         // versionCode 12: second security and code review. The daemon is hashed
         // against a checksum recorded at build time before it is executed, the
         // build script verifies Bitcoin Core's SHA256SUMS.asc signature, the
@@ -103,7 +162,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 12
+        versionCode = 13
         versionName = "1.0.0"
 
         // The hash of the bundled daemon, embedded for the integrity check in
@@ -117,12 +176,15 @@ android {
     }
 
     signingConfigs {
+        // Created only when the four values are there; the check above has
+        // already failed a release build that has none, so this config is never
+        // quietly missing for an artifact that ships.
         if (hasReleaseKeystore) {
             create("release") {
-                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
-                storePassword = keystoreProperties.getProperty("storePassword")
-                keyAlias = keystoreProperties.getProperty("keyAlias")
-                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
                 // v1 (JAR) signing is off: minSdk 26 devices verify APK Signature
                 // Scheme v2, and an extra JAR signature only leaves a second,
                 // weaker digest over the same files to check.
@@ -137,6 +199,8 @@ android {
             isMinifyEnabled = false
         }
         release {
+            // No fallback: an unsigned release is not produced (see the check at
+            // the top of this file).
             if (hasReleaseKeystore) {
                 signingConfig = signingConfigs.getByName("release")
             }

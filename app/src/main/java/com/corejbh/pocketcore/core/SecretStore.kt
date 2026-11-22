@@ -15,18 +15,22 @@ import javax.crypto.spec.GCMParameterSpec
  * Encrypts the few secrets the app keeps in its preferences with a key that
  * never leaves the Android Keystore.
  *
- * The RPC password is the only secret stored here. It is written as
- * `v1:<iv>:<ciphertext>` (AES-256-GCM, a fresh IV per write) under
- * `<key>_enc`, and the plaintext key is removed. A value found under the old
- * plaintext key - the format every build before versionCode 9 wrote - is read
- * once and re-encrypted in place, so an upgrade keeps the same password and the
- * daemon and any wallet conf built from it keep working.
+ * The RPC password and the watch-only descriptor are the secrets stored here.
+ * Each is written as `v1:<iv>:<ciphertext>` (AES-256-GCM, a fresh IV per write)
+ * under `<key>_enc`, and the plaintext key is removed. A value found under the
+ * old plaintext key - the format every build before versionCode 9 (the password)
+ * or 13 (the descriptor) wrote - is read once and re-encrypted in place, so an
+ * upgrade keeps it.
+ *
+ * A descriptor is not a key, but it is still the address set of somebody's
+ * wallet: in the clear it was readable by any component the app's preferences
+ * were shared with, a backup or a rooted shell. It is protected the same way.
  *
  * Nothing is written in the clear, not even when the Keystore is unavailable (a
  * broken provider, an OEM build without one, a key that a lock screen change has
  * permanently invalidated). The secret then lives in memory only: [read] hands
  * it back for as long as this process runs, the preferences hold nothing, and
- * the next start generates a new one. A password that cannot be protected at
+ * the next start has to ask for it again. A secret that cannot be protected at
  * rest is not written to disk at all.
  */
 internal class SecretStore(private val prefs: SharedPreferences) {
@@ -70,6 +74,12 @@ internal class SecretStore(private val prefs: SharedPreferences) {
         }
         ephemeral.remove(key)
         prefs.edit().putString(encryptedKey(key), encrypted).remove(key).apply()
+    }
+
+    /** Forgets a secret, leaving neither a ciphertext nor a plaintext copy. */
+    fun remove(key: String) {
+        ephemeral.remove(key)
+        prefs.edit().remove(key).remove(encryptedKey(key)).apply()
     }
 
     private fun encrypt(plain: String): String? = withKey { key ->

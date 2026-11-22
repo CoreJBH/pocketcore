@@ -78,7 +78,9 @@ fun PocketCoreApp() {
                     state = state,
                     onPickSnapshot = { uri, name -> NodeController.importSnapshot(uri, name) },
                     onLoadSnapshot = { NodeController.loadSnapshot() },
-                    onClearSnapshot = { NodeController.clearSnapshot() }
+                    onClearSnapshot = { NodeController.clearSnapshot() },
+                    onExportSnapshot = { uri, name -> NodeController.exportSnapshot(uri, name) },
+                    onClearExport = { NodeController.clearExportResult() }
                 )
                 2 -> ExploreScreen(
                     state = state,

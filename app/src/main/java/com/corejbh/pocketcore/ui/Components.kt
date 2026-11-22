@@ -5,6 +5,8 @@ import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PersistableBundle
 import android.widget.Toast
 import androidx.compose.foundation.background
@@ -43,18 +45,82 @@ import com.corejbh.pocketcore.core.NodeStatus
  * [isSensitive] marks an RPC password or a wallet conf: from Android 13 the
  * system then hides the item's preview (and its content) in the clipboard
  * overlay and keeps it out of the clipboard history, which is what a secret
- * should never appear in. The flag is ignored on older releases.
+ * should never appear in.
+ *
+ * Android 12 and below has no such flag, so there the app does the hiding
+ * itself: a sensitive copy is removed from the clipboard after
+ * [SENSITIVE_CLIP_LIFETIME_MS], and the toast says so. A descriptor names every
+ * address of somebody's wallet and a debug log names the daemon's paths, so
+ * neither should stay readable in a clipboard another app can read.
  */
 fun copyToClipboard(context: Context, label: String, text: String, isSensitive: Boolean = false) {
     val manager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val clip = ClipData.newPlainText(label, text)
-    if (isSensitive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    val markedSensitive = isSensitive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    if (markedSensitive) {
         clip.description.extras = PersistableBundle().apply {
             putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
         }
     }
     manager.setPrimaryClip(clip)
-    Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+    if (isSensitive && !markedSensitive) {
+        scheduleClipboardClear(context.applicationContext, manager, clip)
+        Toast.makeText(
+            context,
+            "Copied. This Android version cannot hide it, so it is cleared in ${SENSITIVE_CLIP_LIFETIME_MS / 1000} seconds.",
+            Toast.LENGTH_LONG
+        ).show()
+    } else {
+        Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** How long a sensitive copy stays on the clipboard before Android 13. */
+private const val SENSITIVE_CLIP_LIFETIME_MS = 60_000L
+
+/**
+ * Removes a sensitive copy after [SENSITIVE_CLIP_LIFETIME_MS].
+ *
+ * The clear happens only while the clipboard still holds exactly what was
+ * copied, so a later copy of something else is left alone. On API 26-27, where
+ * `clearPrimaryClip()` does not exist yet, an empty clip is set instead.
+ */
+private fun scheduleClipboardClear(context: Context, manager: ClipboardManager, clip: ClipData) {
+    val copied = clip.getItemAt(0).coerceToText(context).toString()
+    Handler(Looper.getMainLooper()).postDelayed({
+        val current = manager.primaryClip ?: return@postDelayed
+        val currentText = if (current.itemCount > 0) {
+            current.getItemAt(0).coerceToText(context).toString()
+        } else {
+            ""
+        }
+        if (currentText != copied) return@postDelayed
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            manager.clearPrimaryClip()
+        } else {
+            manager.setPrimaryClip(ClipData.newPlainText("", ""))
+        }
+    }, SENSITIVE_CLIP_LIFETIME_MS)
+}
+
+/**
+ * True where a sensitive copy is protected by the system itself (Android 13+),
+ * false where the app has to clear the clipboard on a timer instead.
+ */
+fun clipboardHidesSensitiveCopies(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+
+/**
+ * The sentence shown beside a sensitive COPY on an Android version that has no
+ * sensitive clipboard flag, so the timer is not a hidden behaviour.
+ */
+@Composable
+fun ClipboardNote() {
+    if (clipboardHidesSensitiveCopies()) return
+    Muted(
+        "Android 12 and below lets other apps read the clipboard. A copy here is removed again " +
+            "after one minute, so paste it before then.",
+        color = PocketColors.Warning
+    )
 }
 
 @Composable

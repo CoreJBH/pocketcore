@@ -64,9 +64,13 @@ fun SettingsScreen(
     var confirmFull by remember { mutableStateOf(false) }
     val scan by DescriptorScanController.state.collectAsStateWithLifecycle()
 
-    LaunchedEffect(config.network) {
+    LaunchedEffect(config.network, state.message) {
         val measured = withContext(Dispatchers.IO) {
-            NodePaths.datadirSizeBytes(context) to NodePaths.freeSpaceBytes(context)
+            // Only the folder of the selected network is measured: mainnet keeps
+            // its chain in the data directory root, signet and testnet4 in their
+            // own subdirectories, and adding them together described a number
+            // that matched no setting on screen.
+            NodePaths.networkDataSizeBytes(context, config.network) to NodePaths.freeSpaceBytes(context)
         }
         dataSize = measured.first
         freeBytes = measured.second
@@ -154,7 +158,10 @@ fun SettingsScreen(
             }
             SpacerH(10)
             InfoRow("Data directory", NodePaths.dataDir(context).absolutePath, mono = false, truncate = true)
-            InfoRow("Used by chain", if (dataSize >= 0) formatBytes(dataSize) else "calculating...")
+            InfoRow(
+                "Used by ${config.network.label} chain",
+                if (dataSize >= 0) formatBytes(dataSize) else "calculating..."
+            )
             InfoRow("bitcoin.conf", NodePaths.confFile(context).absolutePath, mono = false, truncate = true)
         }
 
@@ -355,6 +362,12 @@ private fun DescriptorCard(scan: DescriptorState, state: NodeUiState) {
                 )
             }
             SpacerH(10)
+            if (!clipboardHidesSensitiveCopies()) {
+                // Android 12 and below cannot mark the copy sensitive, so the app
+                // clears it on a timer; the card says so before the first copy.
+                ClipboardNote()
+                SpacerH(10)
+            }
         }
 
         MonoField(
@@ -514,6 +527,10 @@ private fun DebugLogDialog(onDismiss: () -> Unit) {
                     .heightIn(max = 420.dp)
                     .verticalScroll(rememberScrollState())
             ) {
+                if (!clipboardHidesSensitiveCopies()) {
+                    ClipboardNote()
+                    SpacerH(8)
+                }
                 Text(
                     text = if (log.isBlank()) "No log lines yet." else log,
                     color = PocketColors.Muted,

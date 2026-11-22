@@ -52,8 +52,9 @@ data class NodeSettingsState(
  * Small persisted settings store. Values are read once and then kept in a
  * StateFlow so the UI and the foreground service always agree.
  *
- * The RPC password is kept in [SecretStore]: AES-256-GCM under a Keystore key,
- * migrated from the plain SharedPreferences value of earlier builds.
+ * The secrets - the RPC password and the watch-only descriptor - are kept in
+ * [SecretStore] (AES-256-GCM under a Keystore key), migrated from the plaintext
+ * SharedPreferences values of earlier builds.
  */
 class NodeSettings(context: Context) {
 
@@ -80,8 +81,8 @@ class NodeSettings(context: Context) {
             shouldRun = prefs.getBoolean(KEY_SHOULD_RUN, false),
             snapshotPath = prefs.getString(KEY_SNAPSHOT_PATH, null),
             snapshotLabel = prefs.getString(KEY_SNAPSHOT_LABEL, null),
-            descriptorInput = prefs.getString(KEY_DESCRIPTOR_INPUT, "") ?: "",
-            descriptorNormalized = prefs.getString(KEY_DESCRIPTOR_NORMALIZED, null)
+            descriptorInput = secrets.read(KEY_DESCRIPTOR_INPUT) ?: "",
+            descriptorNormalized = secrets.read(KEY_DESCRIPTOR_NORMALIZED)
         )
     }
 
@@ -102,10 +103,24 @@ class NodeSettings(context: Context) {
         putString(KEY_SNAPSHOT_LABEL, label)
     }
 
-    /** Remembered so the watch-only scan survives a restart. */
-    fun setDescriptor(input: String, normalized: String?) = edit {
-        putString(KEY_DESCRIPTOR_INPUT, input)
-        putString(KEY_DESCRIPTOR_NORMALIZED, normalized)
+    /**
+     * Remembered so the watch-only scan survives a restart.
+     *
+     * A descriptor describes the user's addresses - which coins are theirs - so
+     * it goes through [SecretStore] instead of a plain SharedPreferences entry.
+     * A blank value is removed rather than stored, and the plaintext keys of
+     * earlier builds are dropped by [SecretStore.write] on the first save.
+     */
+    fun setDescriptor(input: String, normalized: String?) {
+        if (input.isBlank()) secrets.remove(KEY_DESCRIPTOR_INPUT) else secrets.write(KEY_DESCRIPTOR_INPUT, input)
+        if (normalized.isNullOrBlank()) {
+            secrets.remove(KEY_DESCRIPTOR_NORMALIZED)
+        } else {
+            secrets.write(KEY_DESCRIPTOR_NORMALIZED, normalized)
+        }
+        // Nothing is left for the plain keys of builds before versionCode 13.
+        prefs.edit().remove(KEY_DESCRIPTOR_INPUT).remove(KEY_DESCRIPTOR_NORMALIZED).apply()
+        _state.value = load()
     }
 
     /** A new credential pair, used when an RPC port had to be left to another app. */

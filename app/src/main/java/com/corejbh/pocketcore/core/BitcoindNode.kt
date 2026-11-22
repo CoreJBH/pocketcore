@@ -239,6 +239,12 @@ class BitcoindNode(private val context: Context) {
      * socket table and the fd links of the daemon's PID answers the question the
      * port probe cannot: is the listener the process that was just started?
      *
+     * [SocketOwner.UNKNOWN] means the question could not be answered - no pid, a
+     * /proc entry that cannot be read, a socket table that is missing. Callers
+     * that transmit the password treat it as "not proven to be ours" and refuse
+     * (see `NodeController.maySendCredentials`): an unreadable /proc must not
+     * become a channel for the credentials.
+     *
      * [probe] is the loopback connect used only when the daemon's namespace shows
      * no listener at all: if the port answers anyway, the listener sits in
      * another network namespace and is not the daemon's.

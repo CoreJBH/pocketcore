@@ -14,11 +14,33 @@ import java.util.Base64
 class RpcException(val code: Int, message: String) : Exception(message)
 
 /**
+ * Error codes the app decides on.
+ *
+ * The negative values are Bitcoin Core's own (`src/rpc/protocol.h` v32.1);
+ * [TRANSPORT] is not: the HTTP exchange itself failed, which is a different
+ * fact from "Core answered and refused". An earlier build reported both as -1,
+ * so a node that answered RPC_MISC_ERROR was read as unreachable (and the other
+ * way round), and the startup warm-up branch could hide a real error. The value
+ * sits outside Core's numbering, so no server-side error can collide with it.
+ */
+object RpcCode {
+    /** `RPC_MISC_ERROR`: Core answered, and the answer was an error. */
+    const val MISC = -1
+
+    /** `RPC_IN_WARMUP`: Core is still loading and is not ready for this call. */
+    const val IN_WARMUP = -28
+
+    /** No HTTP answer: connection refused, reset or timed out. Not a Core code. */
+    const val TRANSPORT = -1000
+}
+
+/**
  * Minimal blocking JSON-RPC client for the local daemon.
  *
  * Only loopback HTTP is used; the app's network security config permits
  * cleartext for 127.0.0.1 alone. Every call opens its own connection, so a long
- * running call (a descriptor scan) never blocks the polling loop.
+ * running call (a descriptor scan, a snapshot dump) never blocks the polling
+ * loop.
  */
 class RpcClient(
     /** Loopback port this client speaks to; the caller checks who listens on it. */
@@ -73,7 +95,7 @@ class RpcClient(
         } catch (error: RpcException) {
             throw error
         } catch (error: IOException) {
-            throw RpcException(-1, error.message ?: "Cannot reach bitcoind")
+            throw RpcException(RpcCode.TRANSPORT, error.message ?: "Cannot reach bitcoind")
         } finally {
             connection.disconnect()
         }
@@ -173,11 +195,44 @@ class RpcClient(
 
     suspend fun scanAbort(): Any? = call("scantxoutset", listOf("abort"), timeoutMs = 10_000)
 
+    // --- UTXO snapshot export ----------------------------------------------
+
+    /**
+     * Writes the UTXO set to [path] with `dumptxoutset`.
+     *
+     * [path] is absolute, so Core does not resolve it against its datadir;
+     * [rollbackHeight] null means the current tip (`latest`). Core refuses a
+     * file that already exists and writes `<path>.incomplete` while it works, so
+     * the caller clears both first and again afterwards.
+     *
+     * The call returns only when the dump is complete, which on a phone can
+     * take minutes, so the read timeout is long rather than the default.
+     */
+    suspend fun dumpTxOutSet(
+        path: String,
+        rollbackHeight: Long? = null,
+        timeoutMs: Int = DUMP_TIMEOUT_MS
+    ): JSONObject = call(
+        "dumptxoutset",
+        dumpTxOutSetParams(path, rollbackHeight),
+        timeoutMs = timeoutMs
+    ).asObject()
+
     private fun Any?.asObject(): JSONObject = this as? JSONObject ?: JSONObject()
 
     private fun Any?.asString(): String = when (this) {
         is String -> this
         null -> ""
         else -> toString()
+    }
+
+    private companion object {
+        /**
+         * `dumptxoutset` runs for as long as the chainstate walk takes. On a
+         * phone that is minutes even for a snapshot of a pruned node, so the
+         * read timeout is two hours: a shorter one would fail a dump that is
+         * still making progress.
+         */
+        const val DUMP_TIMEOUT_MS = 2 * 60 * 60 * 1000
     }
 }

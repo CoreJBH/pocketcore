@@ -137,9 +137,12 @@ Every figure on these screens is an RPC answer from the phone's own node.
 - **Pruned or full mobile storage.** Default `prune=550`, switchable to 2048 MB,
   5120 MB or `Full` (`prune=0`, every block kept: about 750-800 GB on mainnet). A
   pruned node still validates every block.
-- **AssumeUTXO.** Load a `dumptxoutset` `.dat` file to jump to a recent height in
-  minutes; background validation continues from genesis, and both chainstates are
-  shown with their own progress.
+- **AssumeUTXO, both ways.** Load a `dumptxoutset` `.dat` file to jump to a recent
+  height in minutes; background validation continues from genesis, and both
+  chainstates are shown with their own progress. **EXPORT SNAPSHOT** does the
+  reverse on the phone itself: the node dumps its own UTXO set with
+  `dumptxoutset <path> latest`, and the file is written to wherever the system
+  picker points - another device, a USB stick, a cloud folder.
 - **Network selector.** Mainnet (default), Signet and Testnet4, each with its own
   data directory and ports.
 - **Background policy.** "Wi-Fi only" and "Charging only" pause the node (graceful
@@ -355,13 +358,33 @@ bitcoin-cli getpeerinfo            # transport per peer (v1 or v2) and services
 ### Loading an AssumeUTXO snapshot
 
 1. On a desktop node of the same network, create a snapshot:
-   `bitcoin-cli dumptxoutset /path/utxo-<height>.dat`
+   `bitcoin-cli dumptxoutset /path/utxo-<height>.dat latest`
 2. Copy the `.dat` file to the phone.
 3. In PocketCore open **SYNC**, choose the file, then press **LOAD SNAPSHOT**
    while the node is running (the app calls `loadtxoutset`).
 4. The sync screen then shows a snapshot chainstate and the background
    validation chainstate side by side until the snapshot has been fully
    validated.
+
+### Exporting one from the phone
+
+The same screen writes this node's own UTXO set, so a second phone (or this one
+after its chain data is deleted) can start from it:
+
+1. **SYNC -> EXPORT SNAPSHOT** while the node is running. The button is enabled
+   only then, and while no other snapshot operation is in flight.
+2. Choose where the file goes in the system picker; the name it suggests is
+   `pocketcore-<network>-<height>-<date>.dat`.
+3. The app calls `dumptxoutset <cache file> latest`. The dump runs inside the
+   daemon - minutes on a phone - and the card shows the stage, then the base
+   height, the number of coins written and the UTXO set hash Core reported, plus
+   the size of the file that was saved.
+4. The dump lives in the app's cache only while it is copied to the file you
+   chose; the cache copy and Core's `<path>.incomplete` are removed afterwards.
+
+The exported file can be loaded with **LOAD SNAPSHOT** as above. It is a
+snapshot of the node's current UTXO set, so it is at the node's own height: a
+node that is still syncing exports the height it has actually validated.
 
 ## Build the daemon
 

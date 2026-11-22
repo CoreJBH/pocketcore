@@ -23,12 +23,43 @@ import java.io.File
 
 enum class NodeStatus { STOPPED, WAITING, STARTING, RUNNING, STOPPING, ERROR }
 
+/**
+ * Whether the RPC credentials may be handed to a socket with owner [owner].
+ *
+ * Fail-closed, and the single place the rule is written down: only the listener
+ * the daemon of this app itself holds receives them. [SocketOwner.FOREIGN] is
+ * another process, [SocketOwner.NOT_LISTENING] cannot reach the daemon anyway,
+ * and [SocketOwner.UNKNOWN] - a /proc entry that could not be read - leaves the
+ * owner unproven, which is not a reason to hand out a password.
+ */
+internal fun credentialsAllowed(owner: SocketOwner): Boolean = owner == SocketOwner.OURS
+
 data class SnapshotModel(
     val path: String? = null,
     val label: String? = null,
     val sizeBytes: Long = 0L,
     val busy: Boolean = false,
     val result: String? = null,
+    val error: String? = null
+)
+
+/**
+ * State of an export (`dumptxoutset`) of this node's own UTXO set.
+ *
+ * The dump is written by the daemon into the app's cache, then copied to the
+ * file the user picked; the temp file never outlives the export. The figures
+ * Core reported are kept so the card can show the base height, the number of
+ * coins and the UTXO set hash of what was written.
+ */
+data class SnapshotExportModel(
+    val busy: Boolean = false,
+    /** What the export is doing right now, e.g. "Dumping the UTXO set". */
+    val stage: String? = null,
+    /** Name of the document the user chose. */
+    val fileName: String? = null,
+    /** Size of the file that was written to that document. */
+    val bytesWritten: Long? = null,
+    val dump: TxOutSetDump? = null,
     val error: String? = null
 )
 
@@ -49,6 +80,7 @@ data class NodeUiState(
     val pid: Int? = null,
     val lastUpdated: Long = 0L,
     val snapshot: SnapshotModel = SnapshotModel(),
+    val snapshotExport: SnapshotExportModel = SnapshotExportModel(),
     val message: String? = null,
     val networkLabel: String = "",
     /** Port actually handed to bitcoind; 0 means "the network default". */
@@ -357,13 +389,24 @@ object NodeController {
     /**
      * True when the RPC credentials may be sent to [port] on behalf of [pid].
      *
-     * The only case that must be refused is a listening socket held by some
-     * other process; when nothing listens the request cannot reach anyone, and
-     * [SocketOwner.UNKNOWN] (a /proc entry that cannot be read) falls back to the
-     * previous behaviour rather than locking the node out of its own daemon.
+     * Fail-closed: only a listening socket the daemon of this app itself holds
+     * ([SocketOwner.OURS]) receives the credentials. Everything else is refused,
+     * including [SocketOwner.UNKNOWN] - a /proc entry that cannot be read, which
+     * leaves the owner of the port unproven - and [SocketOwner.NOT_LISTENING],
+     * where the stop request cannot reach the daemon anyway. An earlier build
+     * treated UNKNOWN as "probably ours"; that turned an unreadable /proc into a
+     * channel for the password.
+     *
+     * A refusal is followed by killing this app's stray daemons, so the node is
+     * not left retrying against a socket it cannot account for: the next start
+     * finds the endpoint free and generates a fresh credential pair.
      */
-    private fun maySendCredentials(port: Int, pid: Int?): Boolean =
-        node.listenerOwner(port, pid) != SocketOwner.FOREIGN
+    private fun maySendCredentials(port: Int, pid: Int?): Boolean {
+        if (credentialsAllowed(node.listenerOwner(port, pid))) return true
+        Log.w(TAG, "Not sending RPC credentials to port $port: its listener is not proven to be this node.")
+        node.killStrayProcesses()
+        return false
+    }
 
     private suspend fun beginStartLocked(config: NodeSettingsState) {
         pollJob?.cancel()
@@ -465,6 +508,11 @@ object NodeController {
 
     private suspend fun refresh() {
         val client = rpc ?: return
+        // A snapshot export holds Core while it walks the chainstate: polling it
+        // would add RPC calls to the same process and flip the status line on a
+        // timeout that only means "busy". The export card is what the screen
+        // shows meanwhile, and the poll resumes as soon as it ends.
+        if (_state.value.snapshotExport.busy) return
         val status = _state.value.status
         if (!node.isAlive()) {
             if (status == NodeStatus.STARTING || status == NodeStatus.RUNNING) {
@@ -503,9 +551,27 @@ object NodeController {
                     handleForeignPort(null)
                     return
                 }
-                // /proc could not be read: the local daemon is the documented
-                // best effort, as before.
-                SocketOwner.UNKNOWN -> listenerVerified = true
+                SocketOwner.UNKNOWN -> {
+                    // The owner of the port could not be established, so the
+                    // credentials are withheld here too (the same fail-closed
+                    // rule as [maySendCredentials]). A daemon that just started
+                    // can take a moment to show its /proc entry, so the poll
+                    // loop simply asks again; past the startup grace a port that
+                    // stays unaccounted for is reported instead of used.
+                    val warming = System.currentTimeMillis() - startedAt < STARTUP_GRACE_MS
+                    _state.update {
+                        it.copy(
+                            status = NodeStatus.STARTING,
+                            detail = if (warming) {
+                                "Warming up the node"
+                            } else {
+                                "The RPC port could not be confirmed as this node's"
+                            },
+                            rpcReachable = false
+                        )
+                    }
+                    return
+                }
             }
         }
         try {
@@ -561,18 +627,41 @@ object NodeController {
                 return
             }
             val elapsed = System.currentTimeMillis() - startedAt
-            if (error.code == -1 && elapsed < STARTUP_GRACE_MS) {
-                _state.update {
+            when (error.code) {
+                // Core is loading the block index and says so. That is the
+                // startup the screen already describes, never an error, and it
+                // is asked again on the next poll.
+                RpcCode.IN_WARMUP -> _state.update {
                     it.copy(
                         status = NodeStatus.STARTING,
                         detail = "Warming up the node",
                         rpcReachable = false
                     )
                 }
-            } else if (error.code == -1) {
-                _state.update {
+                // No HTTP answer at all: within the startup grace that is still
+                // the warm-up, after it the daemon is not answering.
+                RpcCode.TRANSPORT -> if (elapsed < STARTUP_GRACE_MS) {
+                    _state.update {
+                        it.copy(
+                            status = NodeStatus.STARTING,
+                            detail = "Warming up the node",
+                            rpcReachable = false
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(
+                            detail = "RPC is not answering (${error.message})",
+                            rpcReachable = false
+                        )
+                    }
+                }
+                // Core answered, and the answer was an error (RPC_MISC_ERROR or
+                // an HTTP status): the node is up, so the line is shown as it is
+                // rather than being mistaken for a slow start.
+                else -> _state.update {
                     it.copy(
-                        detail = "RPC is not answering (${error.message})",
+                        detail = "bitcoind answered with an error: ${error.message}",
                         rpcReachable = false
                     )
                 }
@@ -703,6 +792,10 @@ object NodeController {
             runCatching { client.stop() }
             if (!node.awaitExit(25)) node.destroy()
         } else {
+            // Either a hard stop was asked for, or the endpoint is not proven to
+            // be this node's. Nothing is told the password: the process is ended
+            // here, and [maySendCredentials] has already cleared any stray daemon
+            // of this app so the next start finds a clean port.
             node.destroy()
         }
         rpc = null
@@ -806,6 +899,87 @@ object NodeController {
                 )
             }
         }
+    }
+
+    /**
+     * Writes this node's current UTXO set with `dumptxoutset` and copies it into
+     * the document the user picked.
+     *
+     * The daemon can only write to a path of its own (it runs as this app's UID),
+     * so the dump lands in the cache directory first and is streamed into the
+     * `Uri` afterwards; both the dump and Core's `<path>.incomplete` are removed
+     * when the export ends, whatever the outcome. The dump itself is minutes of
+     * chainstate walking on a phone, so the stage is reported while it runs and
+     * the RPC poll is paused (see [refresh]) to keep Core free for the dump.
+     */
+    fun exportSnapshot(uri: android.net.Uri, displayName: String?) {
+        scope.launch {
+            val network = settings.state.value.network
+            val name = displayName?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+                ?: "pocketcore-${network.chainArg}.dat"
+            _state.update {
+                it.copy(
+                    snapshotExport = SnapshotExportModel(
+                        busy = true,
+                        stage = "Dumping the UTXO set",
+                        fileName = name
+                    )
+                )
+            }
+            val temp = NodePaths.snapshotExportFile(appContext, network, System.currentTimeMillis())
+            val partial = File(temp.absolutePath + INCOMPLETE_SUFFIX)
+            val client = rpc
+            val outcome = runCatching {
+                if (client == null || !node.isAlive()) {
+                    throw IllegalStateException("Start the node before exporting a snapshot.")
+                }
+                // Core refuses a path that already exists, and a dump it started
+                // earlier may have left one of these behind.
+                temp.delete()
+                partial.delete()
+                val dump = TxOutSetDump.from(client.dumpTxOutSet(temp.absolutePath))
+                if (!temp.exists() || temp.length() < 1024) {
+                    throw IllegalStateException("Core reported a snapshot but left no file to copy.")
+                }
+                _state.update {
+                    it.copy(snapshotExport = it.snapshotExport.copy(stage = "Saving the file"))
+                }
+                val stream = appContext.contentResolver.openOutputStream(uri)
+                    ?: throw IllegalStateException("The chosen file could not be opened for writing.")
+                stream.use { output ->
+                    temp.inputStream().use { input -> input.copyTo(output) }
+                }
+                dump to temp.length()
+            }
+            temp.delete()
+            partial.delete()
+            val saved = outcome.getOrNull()
+            _state.update {
+                it.copy(
+                    snapshotExport = if (saved != null) {
+                        SnapshotExportModel(
+                            fileName = name,
+                            bytesWritten = saved.second,
+                            dump = saved.first
+                        )
+                    } else {
+                        SnapshotExportModel(
+                            fileName = name,
+                            error = outcome.exceptionOrNull()?.message
+                                ?: "The snapshot could not be exported."
+                        )
+                    }
+                )
+            }
+            refreshOnceNow()
+        }
+    }
+
+    /** Kept next to [PART_SUFFIX]: Core's own suffix for a dump in progress. */
+    private const val INCOMPLETE_SUFFIX = ".incomplete"
+
+    fun clearExportResult() {
+        _state.update { it.copy(snapshotExport = SnapshotExportModel()) }
     }
 
     fun loadSnapshot() {

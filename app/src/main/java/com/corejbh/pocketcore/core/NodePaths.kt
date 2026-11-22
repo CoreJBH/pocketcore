@@ -42,7 +42,48 @@ object NodePaths {
      */
     fun binaryIntegrityStamp(context: Context): File = File(root(context), "binary-integrity.txt")
 
-    fun datadirSizeBytes(context: Context): Long = dataDir(context).directorySize()
+    /**
+     * The directory that holds one network's chain data.
+     *
+     * Mainnet is the data directory itself (`blocks/`, `chainstate/`,
+     * `debug.log`), while signet and testnet4 have their own subdirectory beside
+     * it.
+     */
+    fun networkDataDir(context: Context, network: BitcoinNetwork): File {
+        val dir = dataDir(context)
+        return if (network.dataSubdir.isEmpty()) dir else File(dir, network.dataSubdir)
+    }
+
+    /**
+     * Bytes the selected network's chain occupies.
+     *
+     * For mainnet the other networks' subdirectories are skipped: they live in
+     * the same parent directory, and counting them made the STORAGE card report
+     * a size that no stored chain on screen could explain.
+     */
+    fun networkDataSizeBytes(context: Context, network: BitcoinNetwork): Long {
+        val dir = networkDataDir(context, network)
+        if (network.dataSubdir.isNotEmpty()) return dir.directorySize()
+        val children = dir.listFiles() ?: return 0L
+        return children
+            .filterNot { it.isDirectory && it.name in OTHER_NETWORK_SUBDIRS }
+            .sumOf { it.directorySize() }
+    }
+
+    /** Subdirectories of the data directory that belong to another network. */
+    private val OTHER_NETWORK_SUBDIRS: Set<String> =
+        BitcoinNetwork.entries.map { it.dataSubdir }.filter { it.isNotEmpty() }.toSet()
+
+    /**
+     * Where `dumptxoutset` writes before the file is handed to the user.
+     *
+     * It lives in the app's cache directory: the daemon runs as this app's UID,
+     * writes `<path>.incomplete` beside it while it works, and nothing here has
+     * to survive a failed export. The name carries the network and a timestamp,
+     * so two exports never collide and Core never refuses an existing file.
+     */
+    fun snapshotExportFile(context: Context, network: BitcoinNetwork, stamp: Long): File =
+        File(context.cacheDir, "utxo-${network.chainArg}-$stamp.dat")
 
     /** Bytes free on the volume that holds the chain, or -1 when unknown. */
     fun freeSpaceBytes(context: Context): Long = runCatching {

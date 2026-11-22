@@ -65,6 +65,21 @@ class ExplorerModelsTest {
         assertEquals("witness_v0_keyhash", parsed.transactions[0].outputs[0].type)
         assertTrue(parsed.transactions[0].isCoinbase)
         assertTrue(parsed.transactions[1].isCoinbase.not())
+        // getblock does not repeat blockhash/confirmations inside each entry, so
+        // a transaction of a confirmed block must not be labelled MEMPOOL.
+        assertFalse(parsed.transactions[0].inMempool)
+        assertFalse(parsed.transactions[1].inMempool)
+    }
+
+    @Test
+    fun aBlockTransactionIsNeverInTheMempool() {
+        // The same entry that reads as a mempool transaction on its own (no
+        // blockhash, no confirmations) is part of a block once getblock returns
+        // it, and only the block decides where it is.
+        val loose = TxSummary.from(JSONObject("""{"txid":"a2","vin":[],"vout":[]}"""))
+        assertTrue(loose.inMempool)
+        val inBlock = BlockInfo.fromBlock(block).transactions.first { it.txid == "a2" }
+        assertFalse(inBlock.inMempool)
     }
 
     @Test

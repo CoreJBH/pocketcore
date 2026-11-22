@@ -137,6 +137,25 @@ def main() -> int:
 
     print("== getpeerinfo:", cli("getpeerinfo").stdout.strip()[:120])
 
+    # dumptxoutset: the app writes the UTXO set a loadtxoutset can consume, and
+    # the shapes below are what SnapshotModels.kt parses. The absolute path is
+    # what the app passes (its own cache directory), and the type is explicit
+    # because Core 32.1 refuses an empty one.
+    export_path = DIR / "exported-utxo.dat"
+    dump = as_json("dumptxoutset", str(export_path), "latest")
+    print("== dumptxoutset latest keys:", sorted(dump))
+    print("   ", json.dumps(dump))
+    print("   file:", export_path.exists(), export_path.stat().st_size, "bytes")
+
+    no_type = cli("dumptxoutset", str(DIR / "no-type.dat"), check=False)
+    print("== dumptxoutset without type ->", no_type.returncode, no_type.stderr.strip().splitlines()[-1][:120])
+
+    rollback = as_json("dumptxoutset", str(DIR / "rolled-back.dat"), "", json.dumps({"rollback": 100}))
+    print("== dumptxoutset rollback 100 -> base_height", rollback["base_height"], "coins", rollback["coins_written"])
+
+    for leftover in DIR.glob("*.dat"):
+        leftover.unlink(missing_ok=True)
+
     cli("stop", check=False)
     time.sleep(2)
     print("done")
