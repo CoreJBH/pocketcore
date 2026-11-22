@@ -21,6 +21,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,13 +36,16 @@ import com.corejbh.pocketcore.BuildConfig
 import com.corejbh.pocketcore.core.BitcoinNetwork
 import com.corejbh.pocketcore.core.DescriptorScanController
 import com.corejbh.pocketcore.core.DescriptorState
+import com.corejbh.pocketcore.core.NodeConfig
 import com.corejbh.pocketcore.core.NodeController
 import com.corejbh.pocketcore.core.NodePaths
 import com.corejbh.pocketcore.core.NodeSettingsState
 import com.corejbh.pocketcore.core.NodeStatus
 import com.corejbh.pocketcore.core.NodeUiState
+import com.corejbh.pocketcore.core.PortProbe
 import com.corejbh.pocketcore.core.SystemState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
@@ -62,6 +66,8 @@ fun SettingsScreen(
     var dataSize by remember { mutableStateOf(-1L) }
     var freeBytes by remember { mutableStateOf(-1L) }
     var confirmFull by remember { mutableStateOf(false) }
+    var confirmTor by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val scan by DescriptorScanController.state.collectAsStateWithLifecycle()
 
     LaunchedEffect(config.network, state.message) {
@@ -200,10 +206,25 @@ fun SettingsScreen(
             ToggleRow(
                 title = "Route through Tor (Orbot)",
                 description = "Send peer connections through Orbot's SOCKS5 proxy at 127.0.0.1:9050, " +
-                    "so no peer learns this phone's address. Orbot has to be running; the node " +
-                    "restarts when this changes.",
+                    "so no peer learns this phone's address. PocketCore checks that Orbot is listening " +
+                    "before turning this on; the node restarts when it changes.",
                 checked = config.torProxy,
-                onCheckedChange = onTorProxyChange
+                onCheckedChange = { wanted ->
+                    if (!wanted) {
+                        onTorProxyChange(false)
+                    } else {
+                        // Orbot is the only thing that can carry the traffic,
+                        // so it is probed before the node is restarted with a
+                        // proxy nothing is listening on. The connect is a
+                        // blocking call and stays off the UI thread.
+                        scope.launch {
+                            val reachable = withContext(Dispatchers.IO) {
+                                PortProbe.isListening(NodeConfig.TOR_PROXY_PORT)
+                            }
+                            if (reachable) onTorProxyChange(true) else confirmTor = true
+                        }
+                    }
+                }
             )
             SpacerH(8)
             Muted(
@@ -216,6 +237,13 @@ fun SettingsScreen(
                 "Tor also turns incoming connections off (listen=0) and stops the node asking public " +
                     "DNS seeds for peers (dnsseed=0), so the phone's address never leaves in the clear. " +
                     "The node then reaches the peers it already knows through the proxy.",
+                color = PocketColors.Faint
+            )
+            SpacerH(6)
+            Muted(
+                "Core can be narrowed further with onlynet=onion, which keeps Tor hidden-service peers " +
+                    "only. PocketCore does not set it: the clearnet-addressed peers the node reaches " +
+                    "through the proxy still hide this phone, and onion-only would drop them.",
                 color = PocketColors.Faint
             )
         }
@@ -284,8 +312,9 @@ fun SettingsScreen(
             text = {
                 Text(
                     "This chain was built with pruning, and Bitcoin Core will not re-open it as a " +
-                        "full node. Choosing Full deletes the chain data on this phone and downloads " +
-                        "the whole chain again - about 750-800 GB of storage and a long download."
+                        "full node. Choosing Full deletes the chain data of ${config.network.label} - " +
+                        "the other networks' chains keep theirs - and downloads the whole chain " +
+                        "again: about 750-800 GB and a long download."
                 )
             },
             confirmButton = {
@@ -299,6 +328,36 @@ fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { confirmFull = false }) {
                     Text("KEEP PRUNED", color = PocketColors.Muted)
+                }
+            }
+        )
+    }
+
+    if (confirmTor) {
+        AlertDialog(
+            onDismissRequest = { confirmTor = false },
+            containerColor = PocketColors.CardElevated,
+            titleContentColor = PocketColors.Text,
+            textContentColor = PocketColors.Muted,
+            title = { Text("Orbot is not reachable") },
+            text = {
+                Text(
+                    "Nothing is listening on 127.0.0.1:9050, so with Tor on the node cannot reach any " +
+                        "peer until Orbot runs. Start Orbot (SOCKS5 on port 9050) first, or enable " +
+                        "Tor anyway and the node stays without peers until it is running."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmTor = false
+                    onTorProxyChange(true)
+                }) {
+                    Text("ENABLE ANYWAY", color = PocketColors.Warning, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmTor = false }) {
+                    Text("CANCEL", color = PocketColors.Muted)
                 }
             }
         )

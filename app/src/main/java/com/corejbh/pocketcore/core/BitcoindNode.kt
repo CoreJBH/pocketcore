@@ -116,13 +116,17 @@ class BitcoindNode(private val context: Context) {
     /**
      * Starts the daemon in the background. Returns an error message or null.
      *
+     * [network] is the chain this start runs: its debug.log is the evidence
+     * file for the listener fallback ([ListenerFallback]), and only the bytes
+     * written after this moment may vouch for this start's bind.
+     *
      * The RPC and P2P ports live in bitcoin.conf, which [NodeController] has
      * just written with the endpoints it verified as free. They are deliberately
      * not repeated on the command line: Core merges list options such as
      * -rpcbind, so passing it twice would make the daemon try to bind the same
      * endpoint twice and log a misleading "already running" warning.
      */
-    fun start(): String? {
+    fun start(network: BitcoinNetwork): String? {
         prepareBinary()?.let { return it }
         // No killStrayProcesses() here. [NodeController] stops a daemon of ours
         // through the stop RPC before it asks for a start, and a hard kill of a
@@ -130,6 +134,11 @@ class BitcoindNode(private val context: Context) {
         // appears after that check makes Core refuse the datadir lock, which the
         // app reports; it is not worth an unclean shutdown to avoid.
         NodePaths.processLog(context).writeText("")
+        // The bind evidence starts here: everything debug.log already holds was
+        // written by earlier runs and must not vouch for this start.
+        val evidenceLog = NodePaths.debugLog(context, network)
+        bindEvidenceLog = evidenceLog
+        bindEvidenceOffset = if (evidenceLog.isFile) evidenceLog.length() else 0L
 
         val args = listOf(
             binary.absolutePath,
@@ -263,11 +272,45 @@ class BitcoindNode(private val context: Context) {
         return when (val owner = ProcScan.listenerOwner(tables, File(dir, "fd"), rpcPort)) {
             SocketOwner.NOT_LISTENING ->
                 if (probe(rpcPort)) SocketOwner.FOREIGN else SocketOwner.NOT_LISTENING
+            SocketOwner.UNKNOWN -> fallbackOwner(rpcPort, probe)
             else -> owner
         }
     }
 
     private val FILE_TABLES = listOf("net/tcp", "net/tcp6")
+
+    /** debug.log file and byte offset this start's bind evidence begins at. */
+    @Volatile private var bindEvidenceLog: File? = null
+    @Volatile private var bindEvidenceOffset: Long = 0L
+
+    /**
+     * The verdict when /proc could not answer ([SocketOwner.UNKNOWN]).
+     *
+     * On Android 10 and above SELinux refuses `/proc/<pid>/net/tcp` to every
+     * app, so this is the normal case on a modern phone - the node of the
+     * previous build would never leave STARTING. The owner is instead
+     * established from the daemon being alive, the port answering on loopback
+     * and this start's debug.log (see [ListenerFallback]); a port that answers
+     * without that evidence stays FOREIGN, and UNKNOWN stays a refusal.
+     *
+     * The fallback rests on the daemon this process started ([isAlive]): an
+     * orphan left by an earlier app process has no bind evidence in this
+     * process's hands, so it stays UNKNOWN and is refused the credentials -
+     * killed ungracefully instead, as in the previous build.
+     */
+    private fun fallbackOwner(rpcPort: Int, probe: (Int) -> Boolean): SocketOwner {
+        val log = bindEvidenceLog
+        val confirmed = if (log == null) {
+            false
+        } else {
+            ListenerFallback.rpcBindConfirmed(NodePaths.readFrom(log, bindEvidenceOffset), rpcPort)
+        }
+        return ListenerFallback.owner(
+            alive = isAlive(),
+            portOpen = probe(rpcPort),
+            bindConfirmed = confirmed
+        )
+    }
 
     /**
      * Version reported by the bundled binary, e.g. "v32.1.0".

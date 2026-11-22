@@ -27,6 +27,9 @@ object NodeConfig {
     /** Orbot's SOCKS5 listener, the address the Tor setting writes. */
     const val TOR_PROXY = "127.0.0.1:9050"
 
+    /** The port part of [TOR_PROXY], for the connect probe before enabling. */
+    const val TOR_PROXY_PORT = 9050
+
     fun write(context: Context, settings: NodeSettingsState, rpcPort: Int, p2pPort: Int) {
         NodePaths.confFile(context).writeText(content(settings, rpcPort, p2pPort))
     }
@@ -64,7 +67,10 @@ object NodeConfig {
             // the section header. With it set, Core sends every outbound peer
             // connection through Orbot's SOCKS5 listener and resolves peer
             // addresses there, so the node itself never talks to the internet
-            // directly.
+            // directly. Core's onlynet=onion (hidden-service peers only) is
+            // deliberately not written: it would drop the clearnet-addressed
+            // peers Orbot can still relay for the node, and the settings text
+            // documents the option for the user instead.
             if (settings.torProxy) {
                 appendLine("proxy=${TOR_PROXY}")
             }

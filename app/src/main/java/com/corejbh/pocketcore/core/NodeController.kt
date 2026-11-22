@@ -51,6 +51,18 @@ internal fun clientAllowed(
     alive: Boolean
 ): Boolean = status == NodeStatus.RUNNING && listenerVerified && alive
 
+/**
+ * Whether a closed gate may describe the node as WAITING.
+ *
+ * WAITING means "meant to be running, held back by the Wi-Fi / charger gate".
+ * A node the user stopped (nothing alive, [shouldRun] false) stays STOPPED
+ * when a settings edit or an environment change re-evaluates the policy - the
+ * fifth review found a STOPPED node turning WAITING just because the settings
+ * were edited while the phone was off Wi-Fi.
+ */
+internal fun gateMayWait(nodeAlive: Boolean, shouldRun: Boolean): Boolean =
+    nodeAlive || shouldRun
+
 data class SnapshotModel(
     val path: String? = null,
     val label: String? = null,
@@ -391,7 +403,11 @@ object NodeController {
                     policyPaused = true
                     stopProcess(graceful = true)
                 }
-                if (_state.value.status != NodeStatus.WAITING) {
+                // Only a node that is running or meant to run shows WAITING; a
+                // stopped one stays stopped (see [gateMayWait]).
+                if (gateMayWait(node.isAlive(), config.shouldRun) &&
+                    _state.value.status != NodeStatus.WAITING
+                ) {
                     _state.update {
                         it.copy(status = NodeStatus.WAITING, detail = gate, config = config)
                     }
@@ -450,11 +466,10 @@ object NodeController {
      *
      * Fail-closed: only a listening socket the daemon of this app itself holds
      * ([SocketOwner.OURS]) receives the credentials. Everything else is refused,
-     * including [SocketOwner.UNKNOWN] - a /proc entry that cannot be read, which
-     * leaves the owner of the port unproven - and [SocketOwner.NOT_LISTENING],
-     * where the stop request cannot reach the daemon anyway. An earlier build
-     * treated UNKNOWN as "probably ours"; that turned an unreadable /proc into a
-     * channel for the password.
+     * including [SocketOwner.UNKNOWN] - a port whose owner the /proc check and
+     * the debug.log fallback ([ListenerFallback]) together could not establish.
+     * An earlier build treated UNKNOWN as "probably ours"; that turned an
+     * unreadable /proc into a channel for the password.
      *
      * A refusal is followed by killing this app's stray daemons, so the node is
      * not left retrying against a socket it cannot account for: the next start
@@ -528,7 +543,7 @@ object NodeController {
             rpcHold?.close()
             p2pHold?.close()
         }
-        val error = node.start()
+        val error = node.start(settings.state.value.network)
         if (error != null) {
             fail(error)
             return
@@ -620,12 +635,13 @@ object NodeController {
                     return
                 }
                 SocketOwner.UNKNOWN -> {
-                    // The owner of the port could not be established, so the
-                    // credentials are withheld here too (the same fail-closed
-                    // rule as [maySendCredentials]). A daemon that just started
-                    // can take a moment to show its /proc entry, so the poll
-                    // loop simply asks again; past the startup grace a port that
-                    // stays unaccounted for is reported instead of used.
+                    // The owner of the port could not be established, even with
+                    // the fallback (no PID, or no bind evidence in this start's
+                    // log), so the credentials are withheld here too (the same
+                    // fail-closed rule as [maySendCredentials]). A daemon that
+                    // just started can take a moment to show its /proc entry, so
+                    // the poll loop simply asks again; past the startup grace a
+                    // port that stays unaccounted for is reported instead of used.
                     val warming = System.currentTimeMillis() - startedAt < STARTUP_GRACE_MS
                     updateIfCurrent(generation) {
                         it.copy(
@@ -1110,7 +1126,10 @@ object NodeController {
         scope.launch { refresh() }
     }
 
-    fun wipeNodeData(onDone: (String) -> Unit = {}) {
+    fun wipeNodeData(
+        onDone: (String) -> Unit = {},
+        selectedNetworkOnly: Boolean = false
+    ) {
         scope.launch {
             mutex.withLock {
                 settings.setShouldRun(false)
@@ -1118,8 +1137,16 @@ object NodeController {
                 NodeService.stopService(appContext)
                 node.killStrayProcesses()
                 val dir = NodePaths.dataDir(appContext)
-                val deleted = dir.deleteRecursively()
-                dir.mkdirs()
+                val network = settings.state.value.network
+                val deleted = if (selectedNetworkOnly) {
+                    // A Full (prune=0) rebuild only has to wipe the chain whose
+                    // database is pruned: mainnet's files at the data directory
+                    // root, or the network's own subdirectory - never the other
+                    // networks' chains (see [NodePaths.networkChainEntries]).
+                    NodePaths.networkChainEntries(dir, network).all { it.deleteRecursively() }
+                } else {
+                    dir.deleteRecursively().also { dir.mkdirs() }
+                }
                 _state.update {
                     it.copy(
                         status = NodeStatus.STOPPED,
@@ -1137,7 +1164,12 @@ object NodeController {
                         portNote = null,
                         effectiveRpcPort = settings.state.value.network.rpcPort,
                         effectiveP2pPort = settings.state.value.network.p2pPort,
-                        message = if (deleted) "Node data deleted." else "Node data could not be fully deleted."
+                        message = when {
+                            deleted && selectedNetworkOnly ->
+                                "${network.label} chain data deleted. The next start downloads this chain again from genesis."
+                            deleted -> "Node data deleted."
+                            else -> "Node data could not be fully deleted."
+                        }
                     )
                 }
                 onDone(_state.value.message ?: "")
@@ -1152,11 +1184,13 @@ object NodeController {
      * such a database as an unpruned node ("You need to rebuild the database
      * using -reindex to go back to unpruned mode"). The chain data is therefore
      * deleted - SETTINGS asks first - and the next start downloads the chain
-     * again from genesis.
+     * again from genesis. Only the selected network's chain is deleted: the
+     * fifth review found the wipe taking the other networks' chains with it,
+     * whose data the pruned flag does not concern at all.
      */
     fun rebuildChainAsFull() {
         settings.setPruneMb(0)
-        wipeNodeData()
+        wipeNodeData(selectedNetworkOnly = true)
     }
 
     fun consumeMessage() {

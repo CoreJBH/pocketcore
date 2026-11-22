@@ -10,8 +10,20 @@ class DescriptorsTest {
 
     private val xpub =
         "xpub6CUGRUonZSQ4TWtTMmzXdrXDtypWKiKrhko4egpiMZbpiaQL2jkwSB1icqYh2cfDfVxdx4df189oLKnC5fSwqPfgyP3hooxujYzAu3fDVmz"
+    private val tpub =
+        "tpubDCqtwidUGiMWjK5JoxycqmrbE6vAK6pvFPPN1EsrhUMiTs536xc2acgYrsdUZ7cTTQVYZe9XYDyr2WGoUXJBiq7z2yo1VLd9KWaaf2htk9U"
     private val zpub =
         "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs"
+    // The same BIP32 key as [xpub] under the non-standard version bytes, and
+    // the standard xpub/tpub the conversion must land on.
+    private val ypub =
+        "ypub6XJXj9Uhi7wYJp5aC8n9qwcj4wxxGLKMcsKHS5ibjZyhmgDZHPvW4Efre3WH2XK9595ShYEDTnWMDcPkoMrxddMHqik8PinQ1H3pHbCYAtS"
+    private val vpub =
+        "vpub5Yojp9TxG5K6kvWDh4RHDgLDZ3XcSULrsXkd5u2wbYr4cNmsXRRpC3hSaRdX2oMNrDj2T7SY5oShZkZ4eGcvEvJVEherdzKwC6rt7qutjnA"
+    private val upub =
+        "upub5DyUWUo37PmcudK6rhdf1bEiP5PAVrMMxREQJW94DYUBZGxeGmGFZz3JZDfw2thTSacDhdqyd969gTwVvaCuSgctNMxS45WSvNoEjEd1pdc"
+    private val xpubOfZpub =
+        "xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V"
 
     @Test
     fun acceptsFullDescriptors() {
@@ -36,13 +48,81 @@ class DescriptorsTest {
         assertTrue(wpkh.note!!.contains("wpkh"))
 
         val native = Descriptors.parse(zpub) as Descriptors.Parsed.Valid
-        assertEquals("wpkh($zpub/0/*)", native.descriptor)
+        assertEquals("wpkh($xpubOfZpub/0/*)", native.descriptor)
 
-        val ypub = Descriptors.parse("ypub" + xpub.drop(4)) as Descriptors.Parsed.Valid
-        assertTrue(ypub.descriptor.startsWith("sh(wpkh("))
+        val wrapped = Descriptors.parse(ypub) as Descriptors.Parsed.Valid
+        assertTrue(wrapped.descriptor.startsWith("sh(wpkh($xpub/"))
+    }
 
-        val vpub = Descriptors.parse("vpub" + xpub.drop(4)) as Descriptors.Parsed.Valid
-        assertTrue(vpub.descriptor.startsWith("tr("))
+    /**
+     * Core's descriptor language accepts the standard prefixes only, so a
+     * zpub/ypub/vpub/upub is rebased to xpub/tpub - the same BIP32 key, the
+     * standard version bytes, checksum recomputed - before it reaches the node.
+     */
+    @Test
+    fun convertsBareNonStandardKeys() {
+        assertEquals(xpubOfZpub, Descriptors.standardKey(zpub))
+        assertEquals(xpub, Descriptors.standardKey(ypub))
+        assertEquals(xpub, Descriptors.standardKey(xpub))
+        assertEquals(tpub, Descriptors.standardKey(vpub))
+        assertEquals(tpub, Descriptors.standardKey(upub))
+        assertEquals(tpub, Descriptors.standardKey(tpub))
+        assertEquals(null, Descriptors.standardKey("notakey"))
+    }
+
+    @Test
+    fun wrapsEveryPrefixOnItsOwnScriptType() {
+        val native = Descriptors.parse(zpub) as Descriptors.Parsed.Valid
+        assertEquals("wpkh($xpubOfZpub/0/*)", native.descriptor)
+
+        // vpub is testnet's native segwit key (BIP 84), not a taproot key: an
+        // earlier build wrapped it in tr(...), which scans the wrong scripts.
+        val testnetNative = Descriptors.parse(vpub) as Descriptors.Parsed.Valid
+        assertEquals("wpkh($tpub/0/*)", testnetNative.descriptor)
+
+        val wrappedMainnet = Descriptors.parse(ypub) as Descriptors.Parsed.Valid
+        assertEquals("sh(wpkh($xpub/0/*))", wrappedMainnet.descriptor)
+
+        val wrappedTestnet = Descriptors.parse(upub) as Descriptors.Parsed.Valid
+        assertEquals("sh(wpkh($tpub/0/*))", wrappedTestnet.descriptor)
+    }
+
+    @Test
+    fun convertsKeysInsideFullDescriptors() {
+        val parsed = Descriptors.parse("wpkh($zpub/0/*)") as Descriptors.Parsed.Valid
+        assertEquals("wpkh($xpubOfZpub/0/*)", parsed.descriptor)
+        assertTrue(parsed.note!!.contains("converted"))
+
+        val twoKeys = Descriptors.parse("wsh(sortedmulti(2,$ypub/0/*,$vpub/1/*))") as Descriptors.Parsed.Valid
+        assertEquals("wsh(sortedmulti(2,$xpub/0/*,$tpub/1/*))", twoKeys.descriptor)
+    }
+
+    @Test
+    fun keepsAStandardDescriptorExactlyAsTyped() {
+        val descriptor = "wpkh($xpub/0/*)"
+        val parsed = Descriptors.parse(descriptor) as Descriptors.Parsed.Valid
+        assertEquals(descriptor, parsed.descriptor)
+        assertEquals(null, parsed.note)
+    }
+
+    @Test
+    fun aNonStandardKeyWithBrokenBase58IsRefused() {
+        val tampered = zpub.dropLast(1) + "t"
+        val parsed = Descriptors.parse(tampered)
+        assertTrue(parsed is Descriptors.Parsed.Invalid)
+        assertTrue((parsed as Descriptors.Parsed.Invalid).reason.contains("could not be read"))
+    }
+
+    /**
+     * The checksum Core appends covers the descriptor as written and would not
+     * survive a changed key, so it is cut when a conversion happens; the bare
+     * descriptor reaches the node, which answers with the checksum of what it
+     * received.
+     */
+    @Test
+    fun cutsTheChecksumWhenConverting() {
+        val parsed = Descriptors.parse("wpkh($zpub/0/*)#8fhd9w27") as Descriptors.Parsed.Valid
+        assertEquals("wpkh($xpubOfZpub/0/*)", parsed.descriptor)
     }
 
     @Test

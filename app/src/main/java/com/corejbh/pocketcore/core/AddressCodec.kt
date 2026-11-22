@@ -142,6 +142,47 @@ object AddressCodec {
         return builder.reverse().toString()
     }
 
+    /** The BigInteger behind a Base58 string, or null for a foreign character. */
+    private fun base58Value(encoded: String): java.math.BigInteger? {
+        var value = java.math.BigInteger.ZERO
+        val base = java.math.BigInteger.valueOf(58)
+        for (char in encoded) {
+            val index = BASE58.indexOf(char)
+            if (index < 0) return null
+            value = value.multiply(base).add(java.math.BigInteger.valueOf(index.toLong()))
+        }
+        return value
+    }
+
+    /**
+     * Payload of a Base58Check string - the bytes the checksum was computed
+     * over, leading zero bytes restored from the '1' characters - or null when
+     * the string is not Base58 or the checksum does not match.
+     */
+    fun base58CheckPayload(encoded: String): ByteArray? {
+        if (encoded.isEmpty()) return null
+        val value = base58Value(encoded) ?: return null
+        val magnitude = value.toByteArray()
+        // toByteArray() writes a minimal two's-complement form: it may carry a
+        // sign byte in front, and it drops the leading zero bytes a run of '1'
+        // characters stands for. Both are undone before the checksum check.
+        val stripped = if (magnitude.size > 1 && magnitude[0].toInt() == 0) {
+            magnitude.copyOfRange(1, magnitude.size)
+        } else {
+            magnitude
+        }
+        val zeros = encoded.takeWhile { it == '1' }.length
+        val full = ByteArray(zeros + stripped.size)
+        stripped.copyInto(full, zeros)
+        if (full.size < 5) return null
+        val checksum = doubleSha256(full.copyOfRange(0, full.size - 4)).copyOfRange(0, 4)
+        return if (checksum.contentEquals(full.copyOfRange(full.size - 4, full.size))) {
+            full.copyOfRange(0, full.size - 4)
+        } else {
+            null
+        }
+    }
+
     fun doubleSha256(input: ByteArray): ByteArray {
         val digest = MessageDigest.getInstance("SHA-256")
         return digest.digest(digest.digest(input))

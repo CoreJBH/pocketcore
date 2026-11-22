@@ -90,6 +90,41 @@ object NodePaths {
         android.os.StatFs(filesRoot(context).absolutePath).availableBytes
     }.getOrDefault(-1L)
 
+    /**
+     * The files and directories that hold [network]'s chain data.
+     *
+     * Mainnet keeps its chain in the data directory root, so its entries are
+     * everything there except the other networks' subdirectories - and those
+     * subdirectories are exactly what signet and testnet4 return. This is the
+     * list a network-scoped wipe deletes, and it shows what such a wipe leaves
+     * alone: another network's chain is never in it.
+     */
+    fun networkChainEntries(dataDir: File, network: BitcoinNetwork): List<File> {
+        if (network.dataSubdir.isNotEmpty()) return listOf(File(dataDir, network.dataSubdir))
+        val children = dataDir.listFiles() ?: return emptyList()
+        return children.filterNot { it.isDirectory && it.name in OTHER_NETWORK_SUBDIRS }
+    }
+
+    /**
+     * Reads [file] from byte [offset] to the end, or "" when it cannot be read.
+     *
+     * The reader of a log that is being written to uses an offset taken before
+     * the write it cares about: bytes before the offset belong to earlier runs
+     * and must not be read as evidence for this one (see [ListenerFallback]).
+     */
+    fun readFrom(file: File, offset: Long): String {
+        if (!file.exists()) return ""
+        return runCatching {
+            RandomAccessFile(file, "r").use { access ->
+                val start = offset.coerceIn(0L, access.length())
+                access.seek(start)
+                val bytes = ByteArray((access.length() - start).toInt())
+                access.readFully(bytes)
+                String(bytes, Charsets.UTF_8)
+            }
+        }.getOrDefault("")
+    }
+
     private fun filesRoot(context: Context): File = context.filesDir
 
     /**

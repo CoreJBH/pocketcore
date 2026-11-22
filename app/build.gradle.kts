@@ -94,6 +94,24 @@ android {
         applicationId = "com.corejbh.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 15: fifth security review. On Android 10+ SELinux keeps
+        // the app from reading /proc/<pid>/net/tcp, so the owner of the RPC
+        // port could not be established and a node that started fine never
+        // left STARTING: when the socket tables cannot be read, the owner is
+        // now established from three facts instead - the daemon is alive, the
+        // RPC port answers on loopback, and the daemon's own debug.log, read
+        // from the byte offset this start began at, shows Core binding the RPC
+        // listener (FOREIGN and UNKNOWN are still refusals). On Android 10-12 a
+        // background app cannot read the clipboard either, so the one-minute
+        // clear of a sensitive copy now runs without the "still our copy"
+        // comparison when the clipboard cannot be read. Turning Tor on first
+        // probes Orbot's listener on 127.0.0.1:9050 and says so before enabling;
+        // the settings text documents Core's onlynet=onion. Editing the settings
+        // no longer turns a STOPPED node into WAITING, zpub/ypub/vpub/upub keys
+        // are rebased to the xpub/tpub form Core's descriptors accept before
+        // they reach scantxoutset, and switching to Full (prune=0) rebuilds the
+        // selected network's chain data only, leaving the other networks' chains
+        // in place.
         // versionCode 14: fourth security review. No RPC request is built before
         // this start's listening socket is proved to be the app's own daemon
         // (client() needs RUNNING, a verified listener and a live process, and
@@ -174,7 +192,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 14
+        versionCode = 15
         versionName = "1.0.0"
 
         // The hash of the bundled daemon, embedded for the integrity check in

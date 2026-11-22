@@ -81,20 +81,26 @@ private const val SENSITIVE_CLIP_LIFETIME_MS = 60_000L
 /**
  * Removes a sensitive copy after [SENSITIVE_CLIP_LIFETIME_MS].
  *
- * The clear happens only while the clipboard still holds exactly what was
- * copied, so a later copy of something else is left alone. On API 26-27, where
- * `clearPrimaryClip()` does not exist yet, an empty clip is set instead.
+ * Where the clipboard can be read, the clear happens only while it still holds
+ * exactly what was copied, so a later copy of something else is left alone. On
+ * Android 10 to 12 a background app cannot read the clipboard at all -
+ * `getPrimaryClip()` answers null - so [ClipboardClear.shouldClear] clears
+ * without the comparison there instead of never clearing.
+ * On API 26-27, where `clearPrimaryClip()` does not exist yet, an empty clip is
+ * set instead.
  */
 private fun scheduleClipboardClear(context: Context, manager: ClipboardManager, clip: ClipData) {
     val copied = clip.getItemAt(0).coerceToText(context).toString()
     Handler(Looper.getMainLooper()).postDelayed({
-        val current = manager.primaryClip ?: return@postDelayed
-        val currentText = if (current.itemCount > 0) {
+        val current = manager.primaryClip
+        val currentText = if (current != null && current.itemCount > 0) {
             current.getItemAt(0).coerceToText(context).toString()
-        } else {
+        } else if (current != null) {
             ""
+        } else {
+            null
         }
-        if (currentText != copied) return@postDelayed
+        if (!ClipboardClear.shouldClear(currentText, copied)) return@postDelayed
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             manager.clearPrimaryClip()
         } else {
