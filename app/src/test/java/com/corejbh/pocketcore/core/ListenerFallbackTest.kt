@@ -94,4 +94,69 @@ class ListenerFallbackTest {
             )
         )
     }
+
+    // --- The shrunken-log window (eighth review) -----------------------------
+
+    /** The moment this start launched the daemon, in epoch millis. */
+    private val startMillis = 1_795_324_329_000L // 2026-11-22T05:12:09Z
+
+    @Test
+    fun aBindLineStampedBeforeTheStartIsNotEvidence() {
+        // -shrinkdebugfile=1 keeps the previous run's tail, and that tail can hold
+        // the previous run's own bind line on this very port. It says a listener
+        // was bound - not that this daemon holds it now.
+        val stale = "2026-11-22T05:10:02Z [http] Binding RPC on address 127.0.0.1 port 8332"
+        assertTrue(ListenerFallback.rpcBindConfirmed(stale, 8332))
+        assertFalse(ListenerFallback.rpcBindConfirmed(stale, 8332, sinceMillis = startMillis))
+    }
+
+    @Test
+    fun aBindLineStampedAtOrAfterTheStartIsEvidence() {
+        val fresh = "2026-11-22T05:12:11Z [http] Binding RPC on address 127.0.0.1 port 8332"
+        assertTrue(ListenerFallback.rpcBindConfirmed(fresh, 8332, sinceMillis = startMillis))
+        // The same second as the start: Core stamps whole seconds, so a line
+        // written in the start's own second must count - otherwise a fast start
+        // would be refused its own bind line.
+        val sameSecond = "2026-11-22T05:12:09Z [http] Binding RPC on address 127.0.0.1 port 8332"
+        assertTrue(ListenerFallback.rpcBindConfirmed(sameSecond, 8332, sinceMillis = startMillis + 900))
+    }
+
+    @Test
+    fun aStaleLineBesideAFreshOneStillCounts() {
+        // The preserved tail of the previous run, then this run's own bind: the
+        // window holds both, and the fresh one is the evidence.
+        val window = "2026-11-22T05:10:02Z [http] Binding RPC on address 127.0.0.1 port 8332\n" +
+            "2026-11-22T05:11:58Z Received a block from peer=1\n" +
+            "2026-11-22T05:12:11Z [http] Binding RPC on address 127.0.0.1 port 8332\n"
+        assertTrue(ListenerFallback.rpcBindConfirmed(window, 8332, sinceMillis = startMillis))
+    }
+
+    @Test
+    fun anUndatableLineIsNotEvidenceForAStart() {
+        // A line without Core's stamp cannot be shown to belong to this start, so
+        // in a shrunk window it is not accepted - fail closed, the daemon is then
+        // reported FOREIGN and the start is retried rather than a stranger given
+        // the credentials.
+        val undated = "Binding RPC on address 127.0.0.1 port 8332"
+        assertTrue(ListenerFallback.rpcBindConfirmed(undated, 8332))
+        assertFalse(ListenerFallback.rpcBindConfirmed(undated, 8332, sinceMillis = startMillis))
+        // A stamp that is not a date parses to nothing and is not evidence either.
+        assertFalse(
+            ListenerFallback.rpcBindConfirmed(
+                "2026-13-45T99:99:99Z Binding RPC on address 127.0.0.1 port 8332",
+                8332,
+                sinceMillis = startMillis
+            )
+        )
+    }
+
+    @Test
+    fun aStaleFailureDoesNotHideAFreshBind() {
+        // The previous run ended with a failed bind on the same port; this run
+        // bound it. Both lines are in the shrunk tail, and only the failure is old.
+        val window = "2026-11-22T05:10:02Z [http] Binding RPC on address 127.0.0.1 port 8332 " +
+            "failed: Unable to bind to 127.0.0.1:8332 on this computer.\n" +
+            "2026-11-22T05:12:11Z [http] Binding RPC on address 127.0.0.1 port 8332\n"
+        assertTrue(ListenerFallback.rpcBindConfirmed(window, 8332, sinceMillis = startMillis))
+    }
 }

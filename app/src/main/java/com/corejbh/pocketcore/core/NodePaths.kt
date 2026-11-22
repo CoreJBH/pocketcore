@@ -106,8 +106,30 @@ object NodePaths {
     }
 
     /**
+     * One read of a log from a byte offset.
+     *
+     * [text] is what could be read. [fromStartAfterShrink] is true when the file
+     * had become shorter than the offset, so the read had to begin at the file's
+     * start: the window then holds lines of earlier runs as well, and a caller
+     * that treats a line as evidence for the current run has to check the line's
+     * own timestamp (see [ListenerFallback.rpcBindConfirmed]).
+     */
+    class LogWindow(val text: String, val fromStartAfterShrink: Boolean)
+
+    /**
      * Reads [file] from byte [offset], at most [maxBytes] of it, or "" when it
      * cannot be read.
+     *
+     * [readFromWindow] is the same read with the information about how it had to
+     * be taken; this one is the text alone, for callers that need nothing else.
+     */
+    fun readFrom(file: File, offset: Long, maxBytes: Int = MAX_LOG_READ_BYTES): String =
+        readFromWindow(file, offset, maxBytes).text
+
+    /**
+     * Reads [file] from byte [offset], at most [maxBytes] of it, and says whether
+     * the read had to start at the file's beginning because the file had shrunk
+     * under the offset.
      *
      * The reader of a log that is being written to uses an offset taken before
      * the write it cares about: bytes before the offset belong to earlier runs
@@ -129,20 +151,30 @@ object NodePaths {
      * line written after the shrink would be missed, [ListenerFallback] would
      * call the port foreign and the node it just launched would be killed - a
      * healthy daemon taken for a stranger because its log got shorter.
+     *
+     * The kept tail is why such a window is reported as
+     * [LogWindow.fromStartAfterShrink] and not as an ordinary read: it holds the
+     * previous run's lines too, including the previous run's own `Binding RPC`
+     * line on the same port, and only a timestamp check can tell the two apart.
      */
-    fun readFrom(file: File, offset: Long, maxBytes: Int = MAX_LOG_READ_BYTES): String {
-        if (!file.exists()) return ""
+    fun readFromWindow(
+        file: File,
+        offset: Long,
+        maxBytes: Int = MAX_LOG_READ_BYTES
+    ): LogWindow {
+        if (!file.exists()) return LogWindow("", false)
         return runCatching {
             RandomAccessFile(file, "r").use { access ->
                 val length = access.length()
-                val start = if (offset > length) 0L else offset.coerceIn(0L, length)
+                val shrunk = offset > length
+                val start = if (shrunk) 0L else offset.coerceIn(0L, length)
                 val wanted = minOf(length - start, maxBytes.coerceAtLeast(0).toLong()).toInt()
                 access.seek(start)
                 val bytes = ByteArray(wanted)
                 access.readFully(bytes)
-                String(bytes, Charsets.UTF_8)
+                LogWindow(String(bytes, Charsets.UTF_8), shrunk)
             }
-        }.getOrDefault("")
+        }.getOrDefault(LogWindow("", false))
     }
 
     /**

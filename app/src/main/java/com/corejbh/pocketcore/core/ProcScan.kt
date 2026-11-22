@@ -138,6 +138,44 @@ object ProcScan {
     /** The argument `BitcoindNode.version()` starts the binary with. */
     const val VERSION_FLAG = "-version"
 
+    /**
+     * Clock ticks per second that `/proc/<pid>/stat` counts in (Linux USER_HZ).
+     *
+     * Android's user-space clock is 100 Hz on every ABI the app ships, which is
+     * what turns the `starttime` field into a duration.
+     */
+    const val CLOCK_TICKS_PER_SECOND = 100L
+
+    /**
+     * Field 22 of `/proc/<pid>/stat` - `starttime`, in clock ticks after boot -
+     * or null when [stat] does not parse.
+     *
+     * The second field is the executable name in parentheses, and it may itself
+     * contain spaces or parentheses (`(bitcoind (old))`), so the fields are
+     * counted from after the last `)`. The first token there is field 3
+     * (`state`), which makes `starttime` (field 22) token 19.
+     */
+    fun statStartTicks(stat: String): Long? {
+        val close = stat.lastIndexOf(')')
+        if (close < 0) return null
+        val fields = stat.substring(close + 1).trim()
+        if (fields.isEmpty()) return null
+        return fields.split(WHITESPACE).getOrNull(STARTTIME_FIELD - 3)?.toLongOrNull()
+    }
+
+    /**
+     * Wall-clock epoch millis at which a process with [startTicks] began.
+     *
+     * [nowMillis] is the wall clock now and [uptimeMillis] the phone's own up
+     * time at the same moment (`SystemClock.elapsedRealtime()`): the boot moment
+     * is the difference, and the daemon started [startTicks] ticks after it.
+     */
+    fun processStartMillis(startTicks: Long, nowMillis: Long, uptimeMillis: Long): Long =
+        nowMillis - uptimeMillis + startTicks * 1_000L / CLOCK_TICKS_PER_SECOND
+
+    /** Field number of `starttime` in `/proc/<pid>/stat`. */
+    private const val STARTTIME_FIELD = 22
+
     /** Prefix of the `/proc/<pid>/fd` link that names a socket by inode. */
     const val SOCKET_PREFIX = "socket:["
 

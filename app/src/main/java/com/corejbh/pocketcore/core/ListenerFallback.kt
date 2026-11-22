@@ -1,5 +1,7 @@
 package com.corejbh.pocketcore.core
 
+import java.time.Instant
+
 /**
  * Who holds the RPC listener when /proc cannot answer.
  *
@@ -30,9 +32,17 @@ package com.corejbh.pocketcore.core
  * `-shrinkdebugfile=1` is the one case where the offset cannot be used as it
  * stands: Core truncates the log at startup, so the file becomes shorter than
  * the offset this start recorded. The read then starts at 0 instead (see
- * [NodePaths.readFrom]) - otherwise the window would be empty, the bind line
- * this start writes just after the shrink would never be seen, and a healthy
- * node would be reported as [SocketOwner.FOREIGN] and killed.
+ * [NodePaths.readFromWindow]) - otherwise the window would be empty, the bind
+ * line this start writes just after the shrink would never be seen, and a
+ * healthy node would be reported as [SocketOwner.FOREIGN] and killed.
+ *
+ * Starting at 0 brings back the earlier runs' lines, though: the tail Core keeps
+ * can hold the `Binding RPC` line of the run before, on the very same port. That
+ * line is not evidence for this start - it says a listener *was* bound, not that
+ * this daemon holds it now - so in that window [rpcBindConfirmed] also requires
+ * a line timestamp at or after this start ([sinceMillis]). A preserved line from
+ * a previous run is stamped before the start; the bind line of the daemon that
+ * is starting now is stamped after it.
  */
 object ListenerFallback {
 
@@ -61,13 +71,35 @@ object ListenerFallback {
      * the line is matched and the failure excluded. The cookie file is no
      * alternative here: it is only written when no rpcauth is configured, and
      * PocketCore always configures one.
+     *
+     * [sinceMillis] is the moment the start whose daemon is being judged began.
+     * It is passed when the window had to be read from the beginning of a
+     * shrunken log (see the class comment) and is then required of every
+     * candidate line: a line stamped before this start belongs to an earlier
+     * run, and one that carries no timestamp can not be shown to belong to this
+     * one. A null [sinceMillis] means the window itself already begins at the
+     * start's byte offset, so every line in it was written by this run.
+     *
+     * The comparison is at whole seconds because that is Core's stamp
+     * resolution: a line written in the same second as the start is this
+     * start's own, and is accepted.
      */
-    fun rpcBindConfirmed(logWindow: String, port: Int): Boolean =
-        BIND_LINE.findAll(logWindow).any { match ->
-            !match.value.contains(BIND_FAILED, ignoreCase = true) &&
-                match.groupValues[1].let(::isLoopback) &&
-                match.groupValues[2].toIntOrNull() == port
+    fun rpcBindConfirmed(logWindow: String, port: Int, sinceMillis: Long? = null): Boolean {
+        val sinceSecond = sinceMillis?.let(::wholeSecond)
+        for (line in logWindow.lineSequence()) {
+            val match = BIND_LINE.find(line) ?: continue
+            if (match.value.contains(BIND_FAILED, ignoreCase = true)) continue
+            if (!isLoopback(match.groupValues[1])) continue
+            if (match.groupValues[2].toIntOrNull() != port) continue
+            if (sinceSecond == null) return true
+            val stamped = lineTimestampMillis(line) ?: continue
+            if (stamped >= sinceSecond) return true
         }
+        return false
+    }
+
+    /** [millis] rounded down to the second, Core's stamp resolution. */
+    private fun wholeSecond(millis: Long): Long = Math.floorDiv(millis, 1_000L) * 1_000L
 
     /**
      * Core's sentence when it binds the RPC server, host and port captured,
@@ -78,6 +110,19 @@ object ListenerFallback {
         "Binding RPC on address ([^\\s]+) port (\\d+)\\s*$",
         setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE)
     )
+
+    /**
+     * The timestamp Core prefixes to every debug.log line: ISO-8601 UTC, one
+     * second resolution (`2026-11-22T05:12:09Z`). A line without one is not
+     * datable, and a line that cannot be dated cannot be this start's.
+     */
+    private val LINE_TIMESTAMP = Regex("^(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z)")
+
+    /** Epoch millis of the stamp at the start of [line], or null when it has none. */
+    private fun lineTimestampMillis(line: String): Long? {
+        val stamp = LINE_TIMESTAMP.find(line)?.groupValues?.get(1) ?: return null
+        return runCatching { Instant.parse(stamp).toEpochMilli() }.getOrNull()
+    }
 
     private const val BIND_FAILED = "failed"
 

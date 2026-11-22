@@ -94,6 +94,24 @@ android {
         applicationId = "com.corejbh.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 18: eighth security and state review. On Android 10+ the
+        // RPC password is no longer sent to a port just because a daemon of the
+        // app is alive and its conf names that port: the daemon's own debug.log
+        // must show it binding that loopback port after its process started, or
+        // the orphan is ended with SIGTERM instead (Core's clean shutdown, no
+        // credential anywhere). Where -shrinkdebugfile=1 makes the log shorter
+        // than the offset a start recorded, the read falls back to the file's
+        // start, and a `Binding RPC` line then counts only when its timestamp is
+        // at or after that start, so a preserved line from the previous run can
+        // no longer vouch for a port another app has taken. The RPC pair, the
+        // descriptor and the settings are written with commit() instead of
+        // apply(), so a write that returned is on disk before the daemon that
+        // depends on it starts. Startup no longer reads the Keystore or the disk
+        // on the main thread (the settings load on Dispatchers.IO and every
+        // action waits for it), a data wipe is serialized with the snapshot
+        // operations behind the same gate, and importing or loading a snapshot
+        // is refused up front with a clear message when the volume has no room
+        // for it.
         // versionCode 17: seventh review. debug.log can shrink under the offset
         // a start recorded (-shrinkdebugfile keeps only the recent tail), so the
         // bind evidence is read from the start of the truncated file instead of
@@ -215,7 +233,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 17
+        versionCode = 18
         versionName = "1.0.0"
 
         // The hash of the bundled daemon, embedded for the integrity check in

@@ -65,26 +65,38 @@ class OrphanStopTest {
     fun theStopNeedsALiveDaemonOfOurs() {
         // Nothing of this app runs: there is nothing to stop, and the port is
         // somebody else's business.
-        assertFalse(OrphanStop.maySend(emptyList(), 8332, 8332, listOf(stored)))
+        assertFalse(OrphanStop.maySend(emptyList(), 8332, 8332, listOf(stored), bindConfirmed = true))
     }
 
     @Test
     fun theStopNeedsThePortRecordedInOurOwnConf() {
         // The conf is the only endpoint a daemon of ours can be listening on. A
         // different port is a listener this app never configured.
-        assertFalse(OrphanStop.maySend(listOf(4242), 8332, 8399, listOf(stored)))
-        assertFalse(OrphanStop.maySend(listOf(4242), 8332, null, listOf(stored)))
-        assertTrue(OrphanStop.maySend(listOf(4242), 8332, 8332, listOf(stored)))
+        assertFalse(OrphanStop.maySend(listOf(4242), 8332, 8399, listOf(stored), bindConfirmed = true))
+        assertFalse(OrphanStop.maySend(listOf(4242), 8332, null, listOf(stored), bindConfirmed = true))
+        assertTrue(OrphanStop.maySend(listOf(4242), 8332, 8332, listOf(stored), bindConfirmed = true))
     }
 
     @Test
     fun theStopNeedsACredential() {
-        assertFalse(OrphanStop.maySend(listOf(4242), 8332, 8332, emptyList()))
+        assertFalse(OrphanStop.maySend(listOf(4242), 8332, 8332, emptyList(), bindConfirmed = true))
     }
 
     @Test
     fun aPortOutsideTheRangeIsRefused() {
-        assertFalse(OrphanStop.maySend(listOf(4242), 0, 0, listOf(stored)))
-        assertFalse(OrphanStop.maySend(listOf(4242), 70_000, 70_000, listOf(stored)))
+        assertFalse(OrphanStop.maySend(listOf(4242), 0, 0, listOf(stored), bindConfirmed = true))
+        assertFalse(OrphanStop.maySend(listOf(4242), 70_000, 70_000, listOf(stored), bindConfirmed = true))
+    }
+
+    /**
+     * The eighth review's finding: on Android 10+ the three facts above can all
+     * hold while the port belongs to another app, because nothing on these
+     * versions can prove the listener. Without a bind line in the daemon's own log
+     * the password stays in this process and the daemon is ended with SIGTERM.
+     */
+    @Test
+    fun theStopNeedsTheDaemonsOwnBindLine() {
+        assertFalse(OrphanStop.maySend(listOf(4242), 8332, 8332, listOf(stored), bindConfirmed = false))
+        assertTrue(OrphanStop.maySend(listOf(4242), 8332, 8332, listOf(stored), bindConfirmed = true))
     }
 }

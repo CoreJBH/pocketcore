@@ -139,6 +139,11 @@ class BitcoindNode(private val context: Context) {
         val evidenceLog = NodePaths.debugLog(context, network)
         bindEvidenceLog = evidenceLog
         bindEvidenceOffset = if (evidenceLog.isFile) evidenceLog.length() else 0L
+        // The same moment, in wall-clock terms: if Core shrinks the log at startup
+        // the offset points past the end of the file, the read falls back to the
+        // file's start (see [NodePaths.readFromWindow]), and the preserved lines of
+        // the run before have to be told apart from this run's by their timestamp.
+        bindEvidenceStartedAt = System.currentTimeMillis()
 
         val args = listOf(
             binary.absolutePath,
@@ -265,6 +270,53 @@ class BitcoindNode(private val context: Context) {
     }
 
     /**
+     * Wall-clock epoch millis at which [pid] started, or null when /proc does not
+     * say.
+     *
+     * The kernel reports the start as clock ticks after boot, so the boot moment
+     * is [nowMillis] minus the phone's uptime at the same instant. This is what
+     * dates an orphan daemon: a `Binding RPC` line in its debug.log counts as
+     * evidence for it only when the line was written after the process began, and
+     * a line the previous run wrote cannot pass that test (see [OrphanStop]).
+     */
+    fun processStartedAt(
+        pid: Int,
+        nowMillis: Long = System.currentTimeMillis(),
+        uptimeMillis: Long = android.os.SystemClock.elapsedRealtime()
+    ): Long? {
+        val stat = runCatching { File("/proc/$pid/stat").readText() }.getOrNull() ?: return null
+        val ticks = ProcScan.statStartTicks(stat) ?: return null
+        return ProcScan.processStartMillis(ticks, nowMillis, uptimeMillis)
+    }
+
+    /**
+     * Asks daemons of this app to shut down with SIGTERM and waits for them.
+     *
+     * For Core that signal is the same clean shutdown as the `stop` RPC: it stops
+     * the node, writes the chainstate out and exits, which is exactly what a
+     * SIGKILL in the middle of a LevelDB write does not do. It needs no
+     * credential and cannot reach anything but a process of this app's UID
+     * running the bundled daemon ([isAlivePid] before every signal), so it is the
+     * route left when the endpoint cannot be proved to be the daemon that is
+     * listening on it.
+     *
+     * Returns true only once every pid in [pids] is gone.
+     */
+    fun terminateGracefully(pids: List<Int>, seconds: Long): Boolean {
+        if (pids.isEmpty()) return true
+        var signalled = false
+        for (pid in pids) {
+            if (!isAlivePid(pid)) continue
+            val sent = runCatching {
+                android.system.Os.kill(pid, android.system.OsConstants.SIGTERM)
+            }.isSuccess
+            if (sent) signalled = true
+        }
+        if (!signalled) return pids.none { isAlivePid(it) }
+        return awaitPidExit(pids, seconds)
+    }
+
+    /**
      * Who holds the listening socket on [rpcPort], from [pid]'s own /proc entry.
      *
      * The app sends its RPC credentials to that endpoint, and the credential
@@ -308,6 +360,9 @@ class BitcoindNode(private val context: Context) {
     @Volatile private var bindEvidenceLog: File? = null
     @Volatile private var bindEvidenceOffset: Long = 0L
 
+    /** Wall-clock moment of this start's [bindEvidenceOffset]. */
+    @Volatile private var bindEvidenceStartedAt: Long = 0L
+
     /**
      * The verdict when /proc could not answer ([SocketOwner.UNKNOWN]).
      *
@@ -328,7 +383,17 @@ class BitcoindNode(private val context: Context) {
         val confirmed = if (log == null) {
             false
         } else {
-            ListenerFallback.rpcBindConfirmed(NodePaths.readFrom(log, bindEvidenceOffset), rpcPort)
+            val window = NodePaths.readFromWindow(log, bindEvidenceOffset)
+            ListenerFallback.rpcBindConfirmed(
+                logWindow = window.text,
+                port = rpcPort,
+                // Only a window taken from the start of a shrunken file holds
+                // lines an earlier run wrote, so only there does the bind have to
+                // be stamped at or after this start: a preserved `Binding RPC`
+                // line of the previous run, on this very port, would otherwise
+                // vouch for a port that another app has since taken.
+                sinceMillis = if (window.fromStartAfterShrink) bindEvidenceStartedAt else null
+            )
         }
         return ListenerFallback.owner(
             alive = isAlive(),

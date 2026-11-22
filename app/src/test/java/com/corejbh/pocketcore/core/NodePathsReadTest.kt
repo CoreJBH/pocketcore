@@ -115,6 +115,45 @@ class NodePathsReadTest {
     @Test
     fun readFromAMissingFileIsEmpty() {
         assertEquals("", NodePaths.readFrom(File("/nonexistent/pocketcore/debug.log"), 0L))
+        assertFalse(NodePaths.readFromWindow(File("/nonexistent/pocketcore/debug.log"), 0L).fromStartAfterShrink)
+    }
+
+    // --- The window says how it had to be taken (eighth review) --------------
+
+    @Test
+    fun anOrdinaryWindowIsNotReportedAsAShrink() {
+        // Bytes before the offset belong to an earlier run, so the window is
+        // still this run's alone and its lines need no timestamp check.
+        val file = tempFile("old line\n" + "2026-11-22T05:12:09Z Binding RPC on address 127.0.0.1 port 8332\n")
+        val offset = "old line\n".toByteArray(Charsets.UTF_8).size.toLong()
+        val window = NodePaths.readFromWindow(file, offset)
+        assertFalse(window.fromStartAfterShrink)
+        assertEquals("2026-11-22T05:12:09Z Binding RPC on address 127.0.0.1 port 8332\n", window.text)
+    }
+
+    @Test
+    fun aWindowTakenFromTheStartOfAShrunkenFileSaysSo() {
+        // The flag is what makes the caller demand a timestamp of every line: the
+        // kept tail holds the previous run's bind line on the same port.
+        val previousRun = "2026-11-22T05:10:02Z [http] Binding RPC on address 127.0.0.1 port 8332\n"
+        val file = tempFile(previousRun)
+        val offset = file.length() + 1_000
+        val window = NodePaths.readFromWindow(file, offset)
+        assertTrue(window.fromStartAfterShrink)
+        assertEquals(previousRun, window.text)
+
+        // That line alone passes the old check and must fail the dated one.
+        val startMillis = 1_795_324_329_000L // 2026-11-22T05:12:09Z
+        assertTrue(ListenerFallback.rpcBindConfirmed(window.text, 8332))
+        assertFalse(ListenerFallback.rpcBindConfirmed(window.text, 8332, sinceMillis = startMillis))
+    }
+
+    @Test
+    fun anOffsetExactlyAtTheEndIsNotAShrink() {
+        val file = tempFile("0123456789")
+        val window = NodePaths.readFromWindow(file, file.length())
+        assertFalse(window.fromStartAfterShrink)
+        assertEquals("", window.text)
     }
 
     @Test

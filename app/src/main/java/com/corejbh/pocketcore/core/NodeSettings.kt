@@ -1,9 +1,9 @@
 package com.corejbh.pocketcore.core
 
+import android.annotation.SuppressLint
 import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.update
 import java.security.SecureRandom
 
 /** The three Bitcoin networks a node can run on. */
@@ -56,22 +56,58 @@ data class NodeSettingsState(
  * [SecretStore] (AES-256-GCM under a Keystore key), migrated from the plaintext
  * SharedPreferences values of earlier builds.
  *
+ * **Reading is not the constructor's job.** The constructor touches nothing: the
+ * state starts at the defaults and [load] fills it in. Reading this store on a
+ * cold start means a preference file and, for the secrets, Keystore cipher
+ * operations, and the eighth review found exactly that running on the main
+ * thread inside `NodeController.init` - on the frame where the activity or the
+ * service starts. [NodeController] therefore calls [load] once on
+ * `Dispatchers.IO` and holds every action that depends on the settings until it
+ * has finished, so no start can be built from the defaults.
+ *
  * The setters, [setDescriptor] and [rotateCredentials] are `@Synchronized`: the
  * start path rotates the credentials while the UI can be saving a descriptor,
- * and both end with `_state.value = load()`, so two unlocked writers would
+ * and both end with `_state.value = read()`, so two unlocked writers would
  * publish a state built from a half-applied pair of values. They are short
  * preference writes; one lock on this object is enough.
+ *
+ * Every write is [SharedPreferences.Editor.commit]. These values decide what the
+ * next start runs and what the running daemon authenticates with, so a write
+ * that returns has to be on disk: `apply()` returns first and writes later, and
+ * a process that dies in that window would lose the rotated RPC pair or the
+ * network choice it just announced.
  */
+@SuppressLint("ApplySharedPref")
 class NodeSettings(context: Context) {
 
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val secrets = SecretStore(prefs)
-    private val _state = MutableStateFlow(load())
+    private val _state = MutableStateFlow(NodeSettingsState())
     val state: StateFlow<NodeSettingsState> = _state
 
-    private fun load(): NodeSettingsState {
+    /**
+     * True once [load] has read what this process has stored.
+     *
+     * Until then [state] holds the defaults, which are not what the user chose:
+     * a start built from them would run mainnet for someone who selected signet.
+     */
+    @Volatile
+    var loaded: Boolean = false
+        private set
+
+    /**
+     * Reads the stored settings and publishes them. Runs off the main thread
+     * (`Dispatchers.IO`) from [NodeController.init].
+     */
+    @Synchronized
+    fun load() {
+        _state.value = read()
+        loaded = true
+    }
+
+    private fun read(): NodeSettingsState {
         val user = prefs.getString(KEY_RPC_USER, null) ?: generateToken(16).also {
-            prefs.edit().putString(KEY_RPC_USER, it).apply()
+            prefs.edit().putString(KEY_RPC_USER, it).commit()
         }
         val password = secrets.read(KEY_RPC_PASSWORD) ?: generateToken(32).also {
             secrets.write(KEY_RPC_PASSWORD, it)
@@ -126,23 +162,23 @@ class NodeSettings(context: Context) {
             secrets.write(KEY_DESCRIPTOR_NORMALIZED, normalized)
         }
         // Nothing is left for the plain keys of builds before versionCode 13.
-        prefs.edit().remove(KEY_DESCRIPTOR_INPUT).remove(KEY_DESCRIPTOR_NORMALIZED).apply()
-        _state.value = load()
+        prefs.edit().remove(KEY_DESCRIPTOR_INPUT).remove(KEY_DESCRIPTOR_NORMALIZED).commit()
+        _state.value = read()
     }
 
     /** A new credential pair, used when an RPC port had to be left to another app. */
     @Synchronized
     fun rotateCredentials() {
-        prefs.edit().putString(KEY_RPC_USER, generateToken(16)).apply()
+        prefs.edit().putString(KEY_RPC_USER, generateToken(16)).commit()
         secrets.write(KEY_RPC_PASSWORD, generateToken(32))
-        _state.value = load()
+        _state.value = read()
     }
 
     /** Applies one settings change and republishes the whole state. */
     @Synchronized
-    private fun edit(block: android.content.SharedPreferences.Editor.() -> Unit) {
-        prefs.edit().apply(block).apply()
-        _state.value = load()
+    private fun edit(change: android.content.SharedPreferences.Editor.() -> Unit) {
+        prefs.edit().apply(change).commit()
+        _state.value = read()
     }
 
     companion object {

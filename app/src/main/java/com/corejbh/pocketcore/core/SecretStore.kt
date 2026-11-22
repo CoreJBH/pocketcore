@@ -1,5 +1,6 @@
 package com.corejbh.pocketcore.core
 
+import android.annotation.SuppressLint
 import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -67,10 +68,34 @@ internal fun keyIsUnusable(error: Throwable?): Boolean = when (error) {
  * lock a read could decrypt with a key another thread is regenerating, or lose
  * an [ephemeral] value to a concurrent write. The operations are quick (one
  * Keystore call and one preference write), so a single lock costs nothing.
+ *
+ * Two properties the eighth review asked for:
+ *
+ *  - a write is **durable** when it returns. A secret here is what a daemon that
+ *    is already running authenticates with and what the next start has to find
+ *    again, so the preference write is [SharedPreferences.Editor.commit] rather
+ *    than `apply()`, whose disk write happens later and can be lost with the
+ *    process; a caller that rotated the RPC pair before launching bitcoind would
+ *    otherwise be able to leave the daemon holding a password no later start can
+ *    read.
+ *  - a secret is decrypted **once per process** ([decrypted]). The first read is
+ *    the Keystore operation that must not sit on the main thread; every later
+ *    one (a settings edit republishing the state, the start path reading the
+ *    pair again) is a map lookup. The plaintext is the same value the settings
+ *    state already holds in memory, and it is never written anywhere but here.
  */
+@SuppressLint("ApplySharedPref")
 internal class SecretStore(private val prefs: SharedPreferences) {
 
     private val lock = Any()
+
+    /**
+     * Secrets decrypted in this process, by key. Filled on the first [read] of a
+     * value and dropped with it on [write] / [remove]: the plaintext never
+     * leaves the process, and one Keystore cipher operation per secret per
+     * process is all the app needs.
+     */
+    private val decrypted = HashMap<String, String>()
 
     /**
      * Secrets the Keystore would not encrypt. They last as long as this object,
@@ -81,16 +106,20 @@ internal class SecretStore(private val prefs: SharedPreferences) {
 
     /** The stored secret, decrypting a legacy plaintext value on the way. */
     fun read(key: String): String? = synchronized(lock) {
+        decrypted[key]?.let { return@synchronized it }
         val encrypted = prefs.getString(encryptedKey(key), null)
         if (encrypted != null) {
             val plain = decrypt(encrypted)
-            if (plain != null) return@synchronized plain
+            if (plain != null) {
+                decrypted[key] = plain
+                return@synchronized plain
+            }
             // This value alone cannot be read any more (damaged, or written
             // under a key that is gone). It is dropped - and nothing else: the
             // shared key keeps decrypting the other secrets, so one corrupt
             // entry never costs the RPC password or the descriptor.
             Log.w(TAG, "Stored secret '$key' could not be decrypted; that entry alone is discarded.")
-            prefs.edit().remove(encryptedKey(key)).apply()
+            prefs.edit().remove(encryptedKey(key)).commit()
         }
         ephemeral[key]?.let { return@synchronized it }
         // A value from a build before versionCode 9: plaintext in preferences.
@@ -105,21 +134,24 @@ internal class SecretStore(private val prefs: SharedPreferences) {
 
     private fun writeLocked(key: String, value: String) {
         val encrypted = encrypt(value)
+        decrypted[key] = value
         if (encrypted == null) {
             // No usable Keystore: keep the secret for this process and make sure
             // no plaintext copy is left in the preferences.
             ephemeral[key] = value
-            prefs.edit().remove(key).remove(encryptedKey(key)).apply()
+            prefs.edit().remove(key).remove(encryptedKey(key)).commit()
             return
         }
         ephemeral.remove(key)
-        prefs.edit().putString(encryptedKey(key), encrypted).remove(key).apply()
+        // commit(), not apply(): the value has to be on disk when this returns.
+        prefs.edit().putString(encryptedKey(key), encrypted).remove(key).commit()
     }
 
     /** Forgets a secret, leaving neither a ciphertext nor a plaintext copy. */
     fun remove(key: String) = synchronized(lock) {
+        decrypted.remove(key)
         ephemeral.remove(key)
-        prefs.edit().remove(key).remove(encryptedKey(key)).apply()
+        prefs.edit().remove(key).remove(encryptedKey(key)).commit()
     }
 
     private fun encrypt(plain: String): String? {

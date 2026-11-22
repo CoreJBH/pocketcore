@@ -27,6 +27,15 @@ data class RpcCredential(val user: String, val password: String)
  *    endpoint a daemon started from it can be listening on.
  *  - there is a credential to present ([credentials]).
  *
+ * A fourth fact is required of the endpoint itself, because on Android 10+ the
+ * socket table that would name the listener is unreadable and the three above
+ * can all hold while the port belongs to somebody else: the daemon's own
+ * debug.log must show that this daemon bound that loopback port ([bindConfirmed],
+ * see [ListenerFallback.rpcBindConfirmed] with the daemon's process start time).
+ * Without it the password is not sent anywhere - the caller ends the daemon with
+ * SIGTERM instead, which Core handles as the same clean shutdown. A daemon whose
+ * start bound the port cannot be a stranger's listener behind a reused port.
+ *
  * The credential comes from the node's own files: Core's `.cookie` when the
  * data directory holds one, otherwise the pair this app generated for the start
  * the orphan came from, which is what its `rpcauth` line was built from. Only
@@ -78,17 +87,22 @@ object OrphanStop {
 
     /**
      * Whether the stop RPC may be sent to [port] at all - see the class comment
-     * for the three facts. Fail-closed: anything not established is a refusal,
-     * and the caller falls back to the kill it used before.
+     * for the three facts about the daemon and the fourth about the endpoint.
+     * Fail-closed: anything not established is a refusal, and the caller falls
+     * back to ending this app's daemon with SIGTERM (a clean shutdown for Core
+     * too, and one no other process can receive) instead of handing anybody the
+     * password.
      */
     fun maySend(
         ownDaemonPids: List<Int>,
         port: Int,
         recordedPort: Int?,
-        credentials: List<RpcCredential>
+        credentials: List<RpcCredential>,
+        bindConfirmed: Boolean
     ): Boolean = ownDaemonPids.isNotEmpty() &&
         port in 1..65535 &&
         recordedPort != null &&
         recordedPort == port &&
-        credentials.isNotEmpty()
+        credentials.isNotEmpty() &&
+        bindConfirmed
 }

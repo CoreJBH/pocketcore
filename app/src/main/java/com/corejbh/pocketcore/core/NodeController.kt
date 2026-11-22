@@ -5,6 +5,7 @@ import android.content.Intent
 import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -191,6 +192,21 @@ object NodeController {
     private val snapshotGate = SnapshotGate()
     private val portResolver = PortResolver.live()
 
+    /**
+     * Completed once [NodeSettings.load] has read the stored settings.
+     *
+     * Every action that reads the settings waits on it first: until the read is
+     * done the flow still holds the defaults, and a START built from those would
+     * run the wrong network or the wrong policy. The read itself runs on
+     * [Dispatchers.IO] (see [init]), which is what keeps the Keystore and the
+     * preference file off the main thread.
+     */
+    private val settingsReady = CompletableDeferred<Unit>()
+
+    private suspend fun awaitSettings() {
+        if (!settings.loaded) settingsReady.await()
+    }
+
     private lateinit var appContext: Context
     private lateinit var node: BitcoindNode
     lateinit var settings: NodeSettings
@@ -250,41 +266,73 @@ object NodeController {
         _state.update(transform)
     }
 
+    /**
+     * Prepares the controller. Called from the activity and the service, on the
+     * main thread, so this does nothing that blocks: it builds the two objects
+     * and publishes a first state, and [startup] does the reading.
+     *
+     * The eighth review found the Keystore decryption of the stored secrets and a
+     * filesystem call on the snapshot path sitting here, on the frame that opens
+     * the activity or restarts the service - a cold-start stall on a phone that
+     * is already busy unpacking the daemon. They moved to [startup] on
+     * [Dispatchers.IO]; [settingsReady] keeps every action from running on the
+     * defaults in the meantime.
+     */
     fun init(context: Context) {
         synchronized(this) {
             if (ready) return
             appContext = context.applicationContext
             settings = NodeSettings(appContext)
             node = BitcoindNode(appContext)
-            _state.value = NodeUiState(
-                config = settings.state.value,
-                snapshot = SnapshotModel(
-                    path = settings.state.value.snapshotPath,
-                    label = settings.state.value.snapshotLabel,
-                    sizeBytes = settings.state.value.snapshotPath?.let { File(it).length() } ?: 0L
-                ),
-                networkLabel = SystemState.networkLabel(appContext),
-                effectiveRpcPort = settings.state.value.network.rpcPort,
-                effectiveP2pPort = settings.state.value.network.p2pPort
-            )
+            _state.value = NodeUiState(config = settings.state.value)
             ready = true
         }
-        scope.launch {
-            val version = node.version()
-            if (version.isNotEmpty()) _state.update { it.copy(binaryVersion = version) }
+        scope.launch { startup() }
+    }
+
+    /**
+     * The part of startup that has to leave the main thread: the stored settings
+     * (Keystore), the snapshot file's size, the daemon's version, the peer country
+     * table, and the resume of a node that was running when the process was
+     * recreated.
+     */
+    private suspend fun startup() {
+        try {
+            settings.load()
+        } catch (error: Exception) {
+            // A preference store that cannot be read leaves the defaults: the app
+            // still opens, and the next edit writes a consistent set.
+            Log.e(TAG, "Stored settings could not be read: ${error.message}")
+        } finally {
+            // Completed even when the read threw: an action waiting here has to
+            // run against whatever the store could give, not hang forever.
+            settingsReady.complete(Unit)
         }
-        scope.launch {
-            // The peer country table is a 130 KB asset: decompress it before the
-            // first peer list is drawn, never on the UI thread.
-            GeoIp.ensureLoaded(appContext)
+        val config = settings.state.value
+        val snapshotBytes = config.snapshotPath?.let { path ->
+            runCatching { File(path).length() }.getOrDefault(0L)
+        } ?: 0L
+        _state.update { state ->
+            state.copy(
+                config = config,
+                snapshot = state.snapshot.copy(
+                    path = config.snapshotPath,
+                    label = config.snapshotLabel,
+                    sizeBytes = snapshotBytes
+                ),
+                networkLabel = SystemState.networkLabel(appContext),
+                effectiveRpcPort = if (state.effectiveRpcPort > 0) state.effectiveRpcPort else config.network.rpcPort,
+                effectiveP2pPort = if (state.effectiveP2pPort > 0) state.effectiveP2pPort else config.network.p2pPort
+            )
         }
-        scope.launch {
-            // Resume a node that was running when the app process was recreated.
-            if (settings.state.value.shouldRun && !node.isAlive() &&
-                _state.value.status == NodeStatus.STOPPED
-            ) {
-                start()
-            }
+        val version = node.version()
+        if (version.isNotEmpty()) _state.update { it.copy(binaryVersion = version) }
+        // The peer country table is a 130 KB asset: decompress it before the
+        // first peer list is drawn, never on the UI thread.
+        GeoIp.ensureLoaded(appContext)
+        // Resume a node that was running when the app process was recreated.
+        if (config.shouldRun && !node.isAlive() && _state.value.status == NodeStatus.STOPPED) {
+            start()
         }
     }
 
@@ -323,6 +371,7 @@ object NodeController {
 
     fun start(force: Boolean = false) {
         scope.launch {
+            awaitSettings()
             mutex.withLock {
                 if (node.isAlive()) return@withLock
                 if (force) forceOverride = true
@@ -351,6 +400,7 @@ object NodeController {
 
     fun stop() {
         scope.launch {
+            awaitSettings()
             mutex.withLock {
                 settings.setShouldRun(false)
                 policyPaused = false
@@ -381,6 +431,7 @@ object NodeController {
 
     fun restart() {
         scope.launch {
+            awaitSettings()
             mutex.withLock {
                 settings.setShouldRun(true)
                 val config = settings.state.value
@@ -393,6 +444,7 @@ object NodeController {
 
     fun applySettingsAndMaybeRestart(restartIfRunning: Boolean = true) {
         scope.launch {
+            awaitSettings()
             mutex.withLock {
                 val config = settings.state.value
                 val networkChanged = _state.value.config.network != config.network
@@ -441,6 +493,7 @@ object NodeController {
      * [policyPaused] and the daemon disagreeing about who paused what.
      */
     private suspend fun evaluatePolicy() {
+        awaitSettings()
         mutex.withLock {
             val config = settings.state.value
             val gate = gateReason()
@@ -518,15 +571,35 @@ object NodeController {
     private const val ORPHAN_EXIT_WAIT_SECONDS = 12L
 
     /**
-     * Ends a daemon of this app that this process did not start, with the stop
-     * RPC rather than a kill, and waits for it to be gone.
+     * Lines of the orphan's debug.log searched for its own bind line.
+     *
+     * The tail is read through [NodePaths.readTail], which is bounded to the last
+     * 256 KB whatever this number is; a daemon that has been syncing for days may
+     * have written past that, and then the bind line is simply not there - which
+     * costs the RPC route and leaves the SIGTERM route below, not the shutdown.
+     */
+    private const val ORPHAN_LOG_LINES = 2_000
+
+    /**
+     * Ends a daemon of this app that this process did not start.
      *
      * Android 10 and above keep `/proc/<pid>/net/tcp` unreadable, so
      * [listenerProvedOurs] cannot prove the listener and the previous build
      * always killed the orphan - which can leave the chainstate needing a
-     * reindex. The three facts [OrphanStop] requires instead are all about this
-     * app's own daemon and its own conf, and the credential is the pair that
-     * daemon was started with.
+     * reindex. Two graceful routes exist without that proof, and the stricter one
+     * only when the endpoint is genuinely shown to be this daemon's:
+     *
+     *  1. The stop RPC, with the pair the daemon was started with. It is sent
+     *     only when [OrphanStop.maySend] holds, which now includes the daemon's
+     *     own debug.log showing that this daemon bound this loopback port after
+     *     its process began ([orphanBindConfirmed]). The eighth review's point:
+     *     the pid, the recorded port and a credential do not prove the listener
+     *     is ours, because on these versions nothing can - and a port another app
+     *     grabbed would then be handed the password.
+     *  2. SIGTERM to this app's own `bitcoind` process ([BitcoindNode.terminateGracefully]).
+     *     Core handles it as the same clean shutdown as `stop`, it carries no
+     *     credential at all, and the signal goes to a process of this app's UID
+     *     running the bundled daemon - never to whoever holds the port.
      *
      * Returns true only once every pid in [pids] is gone: Core answers the stop
      * RPC and then writes its state out, so the caller's kill is held back until
@@ -542,23 +615,48 @@ object NodeController {
             user = config.rpcUser,
             password = config.rpcPassword
         )
-        if (!OrphanStop.maySend(pids, port, NodeConfig.readRpcPort(appContext), credentials)) {
-            Log.w(TAG, "Not stopping the daemon on port $port gracefully: it is not this app's to contact.")
-            return false
-        }
-        for (credential in credentials) {
-            val outcome = runCatching {
-                RpcClient(port, credential.user, credential.password).call("stop", timeoutMs = 5_000)
+        val bindConfirmed = orphanBindConfirmed(port, config, pids)
+        if (OrphanStop.maySend(pids, port, NodeConfig.readRpcPort(appContext), credentials, bindConfirmed)) {
+            for (credential in credentials) {
+                val outcome = runCatching {
+                    RpcClient(port, credential.user, credential.password).call("stop", timeoutMs = 5_000)
+                }
+                // A daemon that is already on its way out answers with "shutting
+                // down" instead of a result. That is the same news as an answered
+                // stop: the wait below is what decides whether it is gone.
+                val answered = outcome.isSuccess ||
+                    outcome.exceptionOrNull()?.message?.contains("shutting down", true) == true
+                if (!answered) continue
+                if (node.awaitPidExit(pids, ORPHAN_EXIT_WAIT_SECONDS)) return true
+                break
             }
-            // A daemon that is already on its way out answers with "shutting
-            // down" instead of a result. That is the same news as an answered
-            // stop: the wait below is what decides whether it is gone.
-            val answered = outcome.isSuccess ||
-                outcome.exceptionOrNull()?.message?.contains("shutting down", true) == true
-            if (!answered) continue
-            return node.awaitPidExit(pids, ORPHAN_EXIT_WAIT_SECONDS)
+        } else if (credentials.isNotEmpty()) {
+            Log.w(
+                TAG,
+                "Not sending RPC credentials to port $port: this daemon's log does not show " +
+                    "it binding that port, so the listener is not proven to be ours."
+            )
         }
-        return false
+        // No credential goes to an endpoint that is not proven: the daemon of
+        // this app is ended with SIGTERM instead, which is a clean shutdown too.
+        return node.terminateGracefully(pids, ORPHAN_EXIT_WAIT_SECONDS)
+    }
+
+    /**
+     * True when the orphan's own debug.log shows it binding [port] after it
+     * started, which is the one thing that ties the listening socket to this
+     * daemon rather than to whoever may hold the port.
+     *
+     * The daemon's start is read from `/proc/<pid>/stat` ([BitcoindNode.processStartedAt])
+     * and the log line has to be stamped at or after it ([ListenerFallback.rpcBindConfirmed]),
+     * so a bind line the run before wrote - the same port, the same data
+     * directory - cannot vouch for this daemon. A process whose start time /proc
+     * will not tell is treated as unproven, and the caller ends it with SIGTERM.
+     */
+    private fun orphanBindConfirmed(port: Int, config: NodeSettingsState, pids: List<Int>): Boolean {
+        val startedAt = pids.firstNotNullOfOrNull { node.processStartedAt(it) } ?: return false
+        val tail = NodePaths.readTail(NodePaths.debugLog(appContext, config.network), ORPHAN_LOG_LINES)
+        return ListenerFallback.rpcBindConfirmed(tail, port, sinceMillis = startedAt)
     }
 
     /**
@@ -1077,6 +1175,16 @@ object NodeController {
                 }
                 val result = runCatching {
                     val target = NodeConfig.snapshotTarget(appContext, label)
+                    // Before a byte moves: a snapshot is gigabytes, and filling the
+                    // volume half way through leaves a .part file and a user who
+                    // waited for nothing (see [StorageBudget]).
+                    val sourceBytes = sourceSizeBytes(uri)
+                    val freeBytes = NodePaths.freeSpaceBytes(appContext)
+                    if (!StorageBudget.fits(freeBytes, sourceBytes)) {
+                        throw IllegalStateException(
+                            StorageBudget.shortageMessage(sourceBytes, freeBytes, action = "import")
+                        )
+                    }
                     // The copy lands in a .part file next to the target and is renamed
                     // only once it is complete and plausible: an interrupted or
                     // rejected import leaves no half file behind for the daemon, and
@@ -1246,6 +1354,20 @@ object NodeController {
     /** Kept next to [PART_SUFFIX]: Core's own suffix for a dump in progress. */
     private const val INCOMPLETE_SUFFIX = ".incomplete"
 
+    /**
+     * Size the document provider reports for [uri], or -1 when it does not say.
+     *
+     * Only the size is read: the file itself is not opened here, so nothing of a
+     * gigabytes-long snapshot is touched before the free-space check has passed.
+     */
+    private fun sourceSizeBytes(uri: android.net.Uri): Long = runCatching {
+        appContext.contentResolver
+            .query(uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)
+            ?.use { cursor ->
+                if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else -1L
+            } ?: -1L
+    }.getOrDefault(-1L)
+
     fun clearExportResult() {
         _state.update { it.copy(snapshotExport = SnapshotExportModel()) }
     }
@@ -1269,6 +1391,23 @@ object NodeController {
                 if (path == null || !File(path).exists()) {
                     updateWithStateLock {
                         it.copy(snapshot = it.snapshot.copy(error = "Choose a snapshot file first."))
+                    }
+                    return@run
+                }
+                // Core writes a whole chainstate out of this file, so the volume
+                // needs room for it beside the snapshot itself. Checked before the
+                // call, because inside `loadtxoutset` a full volume stops the
+                // daemon half way through a chainstate it then has to rebuild.
+                val snapshotBytes = runCatching { File(path).length() }.getOrDefault(-1L)
+                val freeBytes = NodePaths.freeSpaceBytes(appContext)
+                if (!StorageBudget.fits(freeBytes, snapshotBytes)) {
+                    updateWithStateLock {
+                        it.copy(
+                            snapshot = it.snapshot.copy(
+                                busy = false,
+                                error = StorageBudget.shortageMessage(snapshotBytes, freeBytes, action = "load")
+                            )
+                        )
                     }
                     return@run
                 }
@@ -1319,12 +1458,26 @@ object NodeController {
         scope.launch { refresh() }
     }
 
+    /**
+     * Deletes the node's chain data (or the selected network's share of it).
+     *
+     * The wipe is a snapshot operation as far as the files are concerned: it
+     * deletes the data directory a LOAD is reading a chainstate from and an
+     * EXPORT is dumping into, and it used to run on its own under the node mutex
+     * only. The eighth review found the race that leaves: a wipe could remove the
+     * chainstate under a running `loadtxoutset`, or delete blocks while a dump was
+     * walking them. It now holds [snapshotGate] like the other four, in the same
+     * order (gate first, node mutex second), so it waits for an operation in
+     * flight and no operation starts under it.
+     */
     fun wipeNodeData(
         onDone: (String) -> Unit = {},
         selectedNetworkOnly: Boolean = false
     ) {
         scope.launch {
-            mutex.withLock {
+            awaitSettings()
+            snapshotGate.run {
+                mutex.withLock {
                 settings.setShouldRun(false)
                 stopProcess(graceful = true)
                 NodeService.stopService(appContext)
@@ -1366,6 +1519,7 @@ object NodeController {
                     )
                 }
                 onDone(_state.value.message ?: "")
+                }
             }
         }
     }

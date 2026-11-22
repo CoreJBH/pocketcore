@@ -214,4 +214,39 @@ class ProcScanTest {
             root.deleteRecursively()
         }
     }
+
+    // --- When did the daemon start (eighth review) ----------------------------
+
+    /**
+     * `starttime` is field 22, counted after the parenthesised command name - and
+     * that name can itself hold spaces, which is why the fields are counted from
+     * the last `)` and not by splitting the line.
+     */
+    @Test
+    fun readsTheStartTimeOfAProcess() {
+        val stat = "4242 (libbitcoind.so) S 1 4242 4242 0 -1 4194560 100 0 0 0 5 6 0 0 20 0 8 0 987654 1234 56 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+        assertEquals(987_654L, ProcScan.statStartTicks(stat))
+        // A binary name with a space and a parenthesis in it does not shift the
+        // fields: they are read after the last ')'.
+        val odd = "4242 (bitcoind (old) build) S 1 4242 4242 0 -1 4194560 100 0 0 0 5 6 0 0 20 0 8 0 123456 1234 56"
+        assertEquals(123_456L, ProcScan.statStartTicks(odd))
+    }
+
+    @Test
+    fun aStatThatDoesNotParseHasNoStartTime() {
+        assertNull(ProcScan.statStartTicks(""))
+        assertNull(ProcScan.statStartTicks("4242 libbitcoind.so S 1"))
+        assertNull(ProcScan.statStartTicks("4242 (x) S"))
+        assertNull(ProcScan.statStartTicks("4242 (x) S 1 2 3"))
+    }
+
+    @Test
+    fun theStartTimeIsTheBootMomentPlusTheTicks() {
+        // 100 Hz clock: 12 345 ticks after boot is 123 450 ms.
+        val now = 1_795_324_329_000L
+        val uptime = 4_000_000L
+        val boot = now - uptime
+        assertEquals(boot + 123_450L, ProcScan.processStartMillis(12_345L, now, uptime))
+        assertEquals(boot, ProcScan.processStartMillis(0L, now, uptime))
+    }
 }

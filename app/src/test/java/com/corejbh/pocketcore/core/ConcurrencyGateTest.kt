@@ -136,4 +136,59 @@ class SnapshotGateTest {
         }
         assertFalse(gate.busy)
     }
+
+    /**
+     * The eighth review: a wipe deletes the data directory a LOAD reads its
+     * snapshot from and an EXPORT dumps into, so it is one of the gated
+     * operations now. It takes the gate first and the state mutex second, in the
+     * same order as the other four.
+     */
+    @Test
+    fun aWipeWaitsForAnOperationInFlightAndBlocksTheNextOne() = runBlocking {
+        val gate = SnapshotGate()
+        val state = Mutex()
+        val order = Collections.synchronizedList(mutableListOf<String>())
+        withTimeout(5_000) {
+            coroutineScope {
+                launch(Dispatchers.Default) {
+                    gate.run {
+                        order += "load-start"
+                        delay(200)
+                        order += "load-end"
+                    }
+                }
+                while (!gate.busy) delay(5)
+                launch(Dispatchers.Default) {
+                    // wipeNodeData's shape: gate first, state mutex second.
+                    gate.run { state.withLock { order += "wipe" } }
+                }
+                delay(50)
+                launch(Dispatchers.Default) {
+                    gate.run { state.withLock { order += "export" } }
+                }
+            }
+        }
+        // The wipe could not delete the chainstate under the load, and the export
+        // that came after it could not dump the directory the wipe was clearing.
+        assertEquals(listOf("load-start", "load-end", "wipe", "export"), order)
+        assertFalse(gate.busy)
+    }
+
+    @Test
+    fun aWipeDoesNotDeadlockAgainstTheStateLock() = runBlocking {
+        // A STOP holds the state mutex while the wipe waits for the gate: the wipe
+        // must not take the gate and then find the mutex held by something that
+        // waits for the gate.
+        val gate = SnapshotGate()
+        val state = Mutex()
+        withTimeout(5_000) {
+            coroutineScope {
+                val stop = launch(Dispatchers.Default) { state.withLock { delay(100) } }
+                val wipe = launch(Dispatchers.Default) { gate.run { state.withLock { delay(10) } } }
+                stop.join()
+                wipe.join()
+            }
+        }
+        assertFalse(gate.busy)
+    }
 }

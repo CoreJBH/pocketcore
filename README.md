@@ -169,9 +169,10 @@ Every figure on these screens is an RPC answer from the phone's own node.
   `NODE`, `SYNC`, `EXPLORE`, `SETTINGS`; the debug log opens from SETTINGS.
 - **Resilient startup.** Before the daemon starts, the app verifies its RPC and
   P2P ports, stops an orphan node left behind by a killed app process (through
-  its own RPC credentials), and moves to a free port when another app holds the
-  default one. Bitcoin Core treats a busy RPC port as fatal, so this app never
-  hands the daemon an endpoint it has not checked.
+  its own RPC credentials, and with SIGTERM when the endpoint cannot be proved to
+  be that daemon's), and moves to a free port when another app holds the default
+  one. Bitcoin Core treats a busy RPC port as fatal, so this app never hands the
+  daemon an endpoint it has not checked.
 
 ## Architecture
 
@@ -333,6 +334,17 @@ the gap between the free-port check and bitcoind's bind is closed rather than
 assumed. The app also hands out no client at all until that proof is in: a
 request needs the node `RUNNING`, a verified listener and a live process, and
 the EXPLORE screen's lookups and broadcast are only offered while `RUNNING`.
+
+Android 10 and later keep that socket table unreadable to apps, so the one
+remaining place a password could go to a port the app has not proved is the
+stop request for a daemon left behind by a killed app process. It is sent only
+when that daemon's own `debug.log` shows it binding the port after its process
+started - the start time comes from `/proc/<pid>/stat`, and the log line has to
+be stamped at or after it, so a bind line the run before wrote cannot vouch for
+the port this time. Without that evidence the daemon is ended with `SIGTERM`,
+which Core handles as the same clean shutdown and which carries no credential at
+all.
+
 `prune=0` means the full chain is kept.
 
 `v2transport` is left at Bitcoin Core 32.1's own default (on), so peers that
@@ -374,7 +386,10 @@ bitcoin-cli getpeerinfo            # transport per peer (v1 or v2) and services
    `bitcoin-cli dumptxoutset /path/utxo-<height>.dat latest`
 2. Copy the `.dat` file to the phone.
 3. In PocketCore open **SYNC**, choose the file, then press **LOAD SNAPSHOT**
-   while the node is running (the app calls `loadtxoutset`).
+   while the node is running (the app calls `loadtxoutset`). A snapshot is a few
+   gigabytes and loading it makes Core write a chainstate of that size, so the
+   app checks the free space first and says how much has to be freed instead of
+   filling the phone half way through.
 4. The sync screen then shows a snapshot chainstate and the background
    validation chainstate side by side until the snapshot has been fully
    validated.
