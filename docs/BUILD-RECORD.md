@@ -2,6 +2,92 @@
 
 Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 9).
 
+## versionCode 14 — fourth security review
+
+Built on 2026-11-22 from `main` at `d440215`. Four review findings, all in the
+app: the daemon is unchanged, byte for byte.
+
+| Item | Value |
+| --- | --- |
+| Package | `com.corejbh.pocketcore` |
+| Version | 1.0.0 (versionCode 14) |
+| Release APK | `app-release.apk`, 8,476,271 bytes, SHA-256 `720a3010a7654e384c2d0b47d8ab66071d5de6792582b659d4c644180a3f5ec3` |
+| Debug APK | `app-debug.apk`, 17,097,366 bytes, SHA-256 `3e33e7192669c6af94110d88a386f10e0437cdcf813c790843d67b6ea3beac87` |
+| Signing (release) | `keystore/pocketcore-release.jks`, alias `pocketcore`; v1 (JAR) signature off, v2 on; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` |
+| Daemon in the APK | `lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
+| Lint | 0 errors, 16 warnings in `lintDebug` and `lintRelease` (`abortOnError = true`) |
+| Unit tests | 135 passing in `testDebugUnitTest` (121 before this build) |
+| zipalign | `zipalign -c -p 4` passes for both APKs |
+
+The release checklist was `:app:testDebugUnitTest :app:lintDebug :app:lintRelease :app:assembleDebug :app:assembleRelease`, all green.
+
+### The four findings
+
+**No client before the listener is verified.** The credentials were only sent to
+a socket proved to be this app's daemon, but the rest of the app asked
+`NodeController.client()` for a client as soon as the process was alive - which
+is before that proof exists, since the free-port check ends before bitcoind
+binds the port. `client()` now returns null unless all three hold: the node is
+`RUNNING` (the state the poll loop only reaches after the proof), this start's
+listener is verified, and the daemon is alive. The rule is a named function
+(`clientAllowed`) with a unit test over every status, and EXPLORE's block and
+transaction lookups and its broadcast are enabled only while `RUNNING`, so the
+buttons say why instead of failing behind a null client.
+
+**A stop is not undone by a reply in flight.** A `refresh()` that was waiting on
+an RPC answer when STOP was pressed wrote its result back and turned the node
+`RUNNING` again. Every start (`beginStartLocked`) and every stop (`stopProcess`)
+now takes the next number from a `LifecycleGeneration` counter, `refresh()` keeps
+the number it began with, and every write it makes - the RUNNING state, the
+warm-up lines, the error lines - goes through `updateIfCurrent`, which drops it
+once the counter has moved. A counter rather than a boolean: a stop followed by
+a quick start must not make an older reply look current again.
+
+**One key, many secrets.** One Keystore key serves the RPC password and the
+watch-only descriptor, and `SecretStore` deleted that key on any failure - so a
+single entry whose AES-GCM tag did not match wiped the other secrets on the way
+out. A failure is now read at its own scope: `AEADBadTagException` means that one
+stored value is unusable, so that entry alone is discarded and the key stays;
+`InvalidKeyException` (which includes `KeyPermanentlyInvalidatedException`) and
+`UnrecoverableKeyException` mean the key itself is gone, and only then is it
+replaced - it decrypts nothing that was still readable. A value that cannot be
+encrypted at all stays in memory for the process, as before. The store is also
+locked, since the UI thread, the start path and the descriptor scan all reach
+the same key and map, and `NodeSettings`' writers are `@Synchronized` so two
+unlocked `_state.value = load()` calls cannot publish a half-applied pair.
+
+**Tor that does not leak.** The switch wrote `proxy=127.0.0.1:9050` and left
+`listen=1` and `dnsseed=1` in place: an inbound socket advertises the phone's
+own address to every peer, and the DNS seeds are resolved by hostname in the
+clear before any connection is proxied. With Tor on, `bitcoin.conf` now carries
+`listen=0` and `dnsseed=0` as well, so the node keeps no clearnet listener and
+resolves no seed; it reaches the addresses Core already carries (fixed seeds,
+`peers.dat`) through the proxy. Turned off, both return to `1`. `NodeConfigTest`
+asserts both states for all three networks, and the SETTINGS text says what the
+switch now does.
+
+### In-place upgrade APK for the installed app
+
+| Item | Value |
+| --- | --- |
+| Package | `com.jbitmstr.pocketcore` |
+| Version | 1.0.0 (versionCode 15) |
+| Build | `:app:assembleDebug` of the same source (`d440215`) in a temporary copy of the tree, with `applicationId` and `versionCode` changed there only - nothing of this build is committed |
+| APK | `pocketcore-update-existing.apk`, 17,097,202 bytes, SHA-256 `f626775849581c49f3be4aa79f71574ea983ad02d8ddbc21ad6a6cf7e443260f` |
+| Signing | the Android debug key, certificate SHA-256 `f5:07:48:15:c3:5c:6b:87:b2:5c:39:32:df:22:83:48:86:8a:cb:b3:18:70:e2:01:18:35:66:ea:2a:a9:c0:11` - the same certificate as versionCode 9-13, so it updates in place and keeps the synced chain |
+| Daemon | identical bytes to the release build above (checked inside the APK) |
+
+### Build environment
+
+The container's passwd entry gives the build JVM `user.home=?`, so the Android
+tooling resolved the debug keystore against a relative `?` and failed
+`packageDebug`. The builds above ran with `ANDROID_USER_HOME=/workspace/.android`
+(where the debug keystore lives) and, for the same process cap as versionCode
+12-13, `--no-parallel --max-workers=1`, `ActiveProcessorCount=1`, SerialGC and
+`kotlin.compiler.execution.strategy=in-process`. The flags live in the build
+command, not in the repository; no source or build script behaviour differs
+because of them.
+
 ## versionCode 12 — second security review, and the all-peers list
 
 Built on 2026-11-22 from `main` at `6ab9cc6`. This table is the `docs/`-only
