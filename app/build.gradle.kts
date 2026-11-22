@@ -1,3 +1,4 @@
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -17,6 +18,24 @@ val keystoreProperties = Properties().apply {
 }
 val hasReleaseKeystore = keystorePropertiesFile.exists()
 
+// The bundled daemon's SHA-256, taken from the file this APK ships.
+//
+// The app executes the extracted copy from its native library directory, so the
+// hash of what was built has to travel with the build: BitcoindNode hashes the
+// extracted file against this value before it runs it (versionCode 12). The
+// value is read here, from the same bytes the packaging step packs, so it cannot
+// disagree with the APK; a build without the daemon fails instead of producing
+// an app that refuses to start.
+val bitcoindBinary = file("src/main/jniLibs/arm64-v8a/libbitcoind.so")
+val bitcoindSha256: String = run {
+    require(bitcoindBinary.isFile) {
+        "Missing bundled daemon at ${bitcoindBinary.absolutePath}. " +
+            "Run scripts/build-bitcoind-android.sh or restore app/src/main/jniLibs/arm64-v8a/libbitcoind.so."
+    }
+    val digest = MessageDigest.getInstance("SHA-256").digest(bitcoindBinary.readBytes())
+    digest.joinToString("") { byte -> "%02x".format(byte) }
+}
+
 android {
     namespace = "com.corejbh.pocketcore"
     compileSdk = 35
@@ -25,6 +44,16 @@ android {
         applicationId = "com.corejbh.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 12: second security and code review. The daemon is hashed
+        // against a checksum recorded at build time before it is executed, the
+        // build script verifies Bitcoin Core's SHA256SUMS.asc signature, the
+        // node's data and settings are excluded from cloud backup and
+        // device-to-device transfer, watch-only descriptors and the debug log
+        // are copied as sensitive clipboard items, an orphan daemon is only
+        // killed when its graceful shutdown failed, the RPC credentials are
+        // only sent to a socket the daemon itself holds, and an optional Orbot
+        // SOCKS5 proxy can carry the peer traffic. Release signing no longer
+        // includes the v1 (JAR) signature, and lint errors now fail the build.
         // versionCode 11: security and stability review. The RPC password is no
         // longer ever written in the clear - a Keystore that cannot encrypt keeps
         // it in memory only - and a key invalidated by a lock screen change is
@@ -74,8 +103,12 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 11
+        versionCode = 12
         versionName = "1.0.0"
+
+        // The hash of the bundled daemon, embedded for the integrity check in
+        // BitcoindNode.prepareBinary().
+        buildConfigField("String", "BITCOIND_SHA256", "\"$bitcoindSha256\"")
 
         ndk {
             // The bundled bitcoind is a single aarch64-linux-android executable.
@@ -90,7 +123,10 @@ android {
                 storePassword = keystoreProperties.getProperty("storePassword")
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
-                enableV1Signing = true
+                // v1 (JAR) signing is off: minSdk 26 devices verify APK Signature
+                // Scheme v2, and an extra JAR signature only leaves a second,
+                // weaker digest over the same files to check.
+                enableV1Signing = false
                 enableV2Signing = true
             }
         }
@@ -152,7 +188,9 @@ android {
     }
 
     lint {
-        abortOnError = false
+        // A lint error is a defect in the build that is about to ship: it fails
+        // the build instead of scrolling past.
+        abortOnError = true
         // Lint runs as part of a release build too, so a release that is about to
         // be published cannot carry a fresh set of errors silently.
         checkReleaseBuilds = true

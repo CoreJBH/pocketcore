@@ -12,7 +12,10 @@ package com.corejbh.pocketcore.core
  *    default port would receive the username and password; it is left alone
  *    instead and the node moves to a free port.
  *  - a daemon of this app that outlived a killed app process is stopped before
- *    the next one starts, because it still holds the data directory lock.
+ *    the next one starts, because it still holds the data directory lock. The
+ *    stop is graceful, and only a stop that fails or times out is followed by a
+ *    kill: a hard kill of a live daemon can leave its LevelDB files half
+ *    written.
  *
  * The probes are injected, so the whole decision is unit tested without a
  * socket.
@@ -54,17 +57,22 @@ class PortResolver(
         // 1. Clear a daemon of this app first (an orphan of a killed app
         //    process keeps the data directory lock). Nothing else is contacted.
         if (ownDaemonRpcPort != null) {
-            if (stopOwnDaemon(ownDaemonRpcPort)) {
-                awaitFree(ownDaemonRpcPort, 8_000)
+            val stopped = stopOwnDaemon(ownDaemonRpcPort)
+            // A stop that was answered still has to release the endpoint; the
+            // daemon writes its chain state out before it exits, which takes a
+            // moment on a phone.
+            val freed = stopped && awaitFree(ownDaemonRpcPort, 8_000)
+            if (!freed) {
+                // The graceful shutdown did not happen or did not finish. Only
+                // now is the daemon killed: whatever is left under our name
+                // still holds the datadir lock and the port.
+                killStrays()
+                // Wait for the daemon's own port to be released. When that port
+                // was the default RPC port this also frees the endpoint the new
+                // daemon needs; when it was a moved one, a foreign holder of the
+                // default port is not waited on.
+                awaitFree(ownDaemonRpcPort, 3_000)
             }
-            // Whatever is left under our name is killed, whether the stop
-            // request was answered or not.
-            killStrays()
-            // Wait for the daemon's own port to be released. When that port was
-            // the default RPC port this also frees the endpoint the new daemon
-            // needs; when it was a moved one, a foreign holder of the default
-            // port is not waited on.
-            awaitFree(ownDaemonRpcPort, 3_000)
         }
 
         // 2. The P2P listen port, together with the loopback port Core binds one

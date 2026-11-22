@@ -35,6 +35,13 @@ object NodePaths {
 
     fun binaryVersionStamp(context: Context): File = File(root(context), "binary-version.txt")
 
+    /**
+     * Records the SHA-256 verdict on [processBinaryPath] for one build, so the
+     * extracted daemon is hashed once per install and version rather than on
+     * every start.
+     */
+    fun binaryIntegrityStamp(context: Context): File = File(root(context), "binary-integrity.txt")
+
     fun datadirSizeBytes(context: Context): Long = dataDir(context).directorySize()
 
     /** Bytes free on the volume that holds the chain, or -1 when unknown. */

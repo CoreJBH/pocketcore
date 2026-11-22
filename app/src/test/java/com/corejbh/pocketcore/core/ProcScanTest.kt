@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.Paths
 
 /** Reading /proc: exact UID comparison, argv matching and stray discovery. */
 class ProcScanTest {
@@ -113,5 +114,104 @@ class ProcScanTest {
         }
         File(dir, "cmdline").writeBytes("$binary\u0000-datadir=/data\u0000".toByteArray(Charsets.UTF_8))
         File(dir, "status").writeText("Name:\tbitcoind\n$uidLine\n")
+    }
+
+    // --- Socket ownership ---------------------------------------------------
+
+    /** A /proc/net/tcp table in the kernel's own layout. */
+    private val tcpTable = """
+          sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+           0: 0100007F:2085 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10123        0 123456 1 0 100 0 0 10 0
+           1: 0100007F:2096 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10123        0 777888 1 0 100 0 0 10 0
+           2: 0100007F:2085 0100007F:D4A2 01 00000000:00000000 00:00000000 00000000 10123        0 999000 1 0 20 4 30 10 -1
+    """.trimIndent()
+
+    @Test
+    fun readsTheInodesOfListeningSocketsOnOnePort() {
+        // 0x2085 = 8325, the RPC port this test's daemon holds.
+        assertEquals(setOf("123456"), ProcScan.listenInodes(tcpTable, 8325))
+        assertEquals(setOf("777888"), ProcScan.listenInodes(tcpTable, 8342))
+        // The established connection on the same port is not a listener.
+        assertTrue(ProcScan.listenInodes(tcpTable, 54434).isEmpty())
+        assertTrue(ProcScan.listenInodes("sl local_address\n", 8325).isEmpty())
+        assertTrue(ProcScan.listenInodes("", 8325).isEmpty())
+    }
+
+    @Test
+    fun readsTheInodeOutOfASocketFdLink() {
+        assertEquals("123456", ProcScan.socketInode("socket:[123456]"))
+        assertNull(ProcScan.socketInode("/data/data/com.corejbh.pocketcore/files/node/data"))
+        assertNull(ProcScan.socketInode("anon_inode:[eventfd]"))
+        assertNull(ProcScan.socketInode("socket:[]"))
+    }
+
+    @Test
+    fun aDaemonOwnsTheListeningSocketItHolds() {
+        val root = Files.createTempDirectory("procscan").toFile()
+        try {
+            val pidDir = File(root, "4242").apply { mkdirs() }
+            File(pidDir, "net").mkdirs()
+            File(pidDir, "net/tcp").writeText(tcpTable)
+            File(pidDir, "fd").mkdirs()
+            // The daemon holds fd 7 on socket 123456.
+            Files.createSymbolicLink(File(pidDir, "fd/7").toPath(), Paths.get("socket:[123456]"))
+            // ... and an unrelated pipe, to show the scan reads the links.
+            Files.createSymbolicLink(File(pidDir, "fd/8").toPath(), Paths.get("pipe:[42]"))
+
+            val tables = listOf(File(pidDir, "net/tcp").readText(), null)
+            assertEquals(SocketOwner.OURS, ProcScan.listenerOwner(tables, File(pidDir, "fd"), 8325))
+            // A port nobody listens on in this namespace.
+            assertEquals(
+                SocketOwner.NOT_LISTENING,
+                ProcScan.listenerOwner(tables, File(pidDir, "fd"), 8332)
+            )
+            assertTrue(ProcScan.ownsSocket(File(pidDir, "fd"), setOf("123456")))
+            assertFalse(ProcScan.ownsSocket(File(pidDir, "fd"), setOf("555555")))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    /**
+     * The regression this check exists for: the port is listening, but not in
+     * the daemon's own fd table, so the credentials must not be sent to it.
+     */
+    @Test
+    fun aListenerTheDaemonDoesNotHoldIsForeign() {
+        val root = Files.createTempDirectory("procscan").toFile()
+        try {
+            val pidDir = File(root, "4242").apply { mkdirs() }
+            File(pidDir, "net").mkdirs()
+            File(pidDir, "net/tcp").writeText(tcpTable)
+            File(pidDir, "fd").mkdirs()
+            Files.createSymbolicLink(File(pidDir, "fd/3").toPath(), Paths.get("socket:[777888]"))
+
+            assertEquals(
+                SocketOwner.FOREIGN,
+                ProcScan.listenerOwner(listOf(tcpTable), File(pidDir, "fd"), 8325)
+            )
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun anUnreadableProcEntryIsNotAVerdict() {
+        val root = Files.createTempDirectory("procscan").toFile()
+        try {
+            // No table could be read at all.
+            assertEquals(
+                SocketOwner.UNKNOWN,
+                ProcScan.listenerOwner(listOf(null, null), File(root, "fd"), 8325)
+            )
+            // A listener exists, but the fd table cannot be listed.
+            assertEquals(
+                SocketOwner.UNKNOWN,
+                ProcScan.listenerOwner(listOf(tcpTable), File(root, "missing-fd"), 8325)
+            )
+            assertFalse(ProcScan.ownsSocket(File(root, "missing-fd"), setOf("123456")))
+        } finally {
+            root.deleteRecursively()
+        }
     }
 }

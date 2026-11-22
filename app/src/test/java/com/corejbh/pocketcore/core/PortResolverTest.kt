@@ -22,6 +22,7 @@ class PortResolverTest {
         var stopCalls = ArrayList<Int>()
         var straysKilled = 0
         var stopAnswers = true
+        var releaseOnStop = true
 
         val resolver = PortResolver(
             isFree = { port -> port !in taken },
@@ -41,7 +42,7 @@ class PortResolverTest {
             },
             awaitFree = { port, _ ->
                 // The daemon is gone once the stop request was answered.
-                if (stopCalls.isNotEmpty() && stopAnswers) taken.remove(port)
+                if (stopCalls.isNotEmpty() && stopAnswers && releaseOnStop) taken.remove(port)
                 port !in taken
             }
         )
@@ -97,11 +98,31 @@ class PortResolverTest {
         assertEquals(defaultRpc, choice.rpc)
         assertNull(choice.note)
         assertFalse(choice.rotateCredentials)
+        assertEquals("a graceful stop leaves nothing to kill", 0, device.straysKilled)
+    }
+
+    /**
+     * A stop that is answered but never releases the endpoint ends in a kill:
+     * the new daemon cannot take a port a live one still holds.
+     */
+    @Test
+    fun killsWhatIsLeftWhenTheStopWasAnsweredButThePortStayedBusy() {
+        val device = Device(defaultRpc)
+        // The stop request is answered, yet nothing is released.
+        device.stopAnswers = true
+        device.releaseOnStop = false
+        val choice = device.resolve(ownDaemonPort = defaultRpc)
+        assertEquals(listOf(defaultRpc), device.stopCalls)
+        assertEquals(1, device.straysKilled)
+        assertTrue(choice.rpc > defaultRpc)
     }
 
     /**
      * Our daemon can sit on a moved port while another app holds the default one:
      * the stop request goes to our port only, and the default port is left alone.
+     *
+     * The stop was answered and the port came free, so nothing is killed: a hard
+     * kill of a live daemon can leave its LevelDB files half written.
      */
     @Test
     fun stopsOurDaemonOnItsOwnPortAndLeavesTheForeignPortAlone() {
@@ -111,7 +132,7 @@ class PortResolverTest {
         assertFalse("our own daemon is stopped", device.taken.contains(defaultRpc + 4))
         assertTrue(choice.rpc > defaultRpc && choice.rpc != choice.p2p && choice.rpc != choice.p2p + 1)
         assertTrue(choice.rotateCredentials)
-        assertEquals(1, device.straysKilled)
+        assertEquals("a graceful stop leaves nothing to kill", 0, device.straysKilled)
     }
 
     @Test

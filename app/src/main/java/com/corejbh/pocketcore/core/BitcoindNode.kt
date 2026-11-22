@@ -1,6 +1,7 @@
 package com.corejbh.pocketcore.core
 
 import android.content.Context
+import com.corejbh.pocketcore.BuildConfig
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -17,11 +18,26 @@ import java.util.concurrent.TimeUnit
  */
 class BitcoindNode(private val context: Context) {
 
-    private var process: Process? = null
+    /**
+     * Written by the coroutine that starts or stops the daemon and read by the
+     * poll loop and the UI, so the field is volatile: without it a reader can
+     * keep seeing the process of an earlier start.
+     */
+    @Volatile private var process: Process? = null
 
     private companion object {
         /** `bitcoind -version` answers in milliseconds; this is a stuck binary. */
         const val VERSION_TIMEOUT_SECONDS = 5L
+
+        /**
+         * What the cached verdicts (integrity, version) belong to: this build.
+         *
+         * A new versionCode means the APK, and with it the extracted daemon,
+         * may have changed, so nothing cached by the previous build is reused.
+         * The expected hash is part of the tag as well: a rebuild that ships a
+         * different daemon without bumping the versionCode still re-verifies.
+         */
+        val BUILD_TAG = "${BuildConfig.VERSION_CODE} ${BuildConfig.BITCOIND_SHA256}"
     }
 
     val binary: File get() = NodePaths.processBinaryPath(context)
@@ -55,11 +71,36 @@ class BitcoindNode(private val context: Context) {
         return fallback
     }
 
-    /** Returns a human-readable problem, or null when the binary is usable. */
+    /**
+     * Returns a human-readable problem, or null when the binary is usable.
+     *
+     * The extracted file is hashed against the checksum this APK was built with
+     * before anything is executed: the executable bit in nativeLibraryDir is
+     * what makes a replaced file dangerous, and the hash is what makes the
+     * replacement visible.
+     */
     fun prepareBinary(): String? {
         val file = binary
         if (!file.exists() || file.length() < 1_000_000) {
             return "Bundled bitcoind is missing at ${file.absolutePath}."
+        }
+        val expected = BuildConfig.BITCOIND_SHA256
+        if (!BinaryIntegrity.isDigest(expected)) {
+            // An APK built without the daemon hash has nothing to compare with,
+            // and running the binary unchecked is exactly what this check
+            // exists to prevent.
+            return "This build carries no checksum for the bundled bitcoind, so it is not started."
+        }
+        val intact = BinaryIntegrity.verify(
+            file = file,
+            expectedSha256 = expected,
+            stampFile = NodePaths.binaryIntegrityStamp(context),
+            buildTag = BUILD_TAG
+        )
+        if (!intact) {
+            return "The bundled bitcoind does not match its checksum " +
+                "(${expected.take(12)}...). Reinstall PocketCore: the file at ${file.absolutePath} " +
+                "is not the daemon this build shipped."
         }
         if (!file.canExecute()) {
             // Owner-only: the executable bit is for this app's UID, not for every
@@ -83,7 +124,11 @@ class BitcoindNode(private val context: Context) {
      */
     fun start(): String? {
         prepareBinary()?.let { return it }
-        killStrayProcesses()
+        // No killStrayProcesses() here. [NodeController] stops a daemon of ours
+        // through the stop RPC before it asks for a start, and a hard kill of a
+        // live daemon can leave its LevelDB files half written. A stray that
+        // appears after that check makes Core refuse the datadir lock, which the
+        // app reports; it is not worth an unclean shutdown to avoid.
         NodePaths.processLog(context).writeText("")
 
         val args = listOf(
@@ -169,18 +214,72 @@ class BitcoindNode(private val context: Context) {
     /** True when a daemon of this app is already running somewhere on the phone. */
     fun ownDaemonRunning(): Boolean = ownDaemonPids().isNotEmpty()
 
-    private fun isAlivePid(pid: Int): Boolean = File("/proc/$pid").exists() &&
-        runCatching { File("/proc/$pid/cmdline").readBytes().toString(Charsets.UTF_8) }
+    /**
+     * True while [pid] is a daemon of this app.
+     *
+     * The binary name and the app's UID are both required: a PID that was reused
+     * by another app's process must not be reported as this app's daemon, and
+     * must never be signalled.
+     */
+    private fun isAlivePid(pid: Int): Boolean {
+        val dir = File("/proc/$pid")
+        if (!dir.exists()) return false
+        val status = runCatching { File(dir, "status").readLines() }.getOrNull() ?: return false
+        if (!ProcScan.runsAs(status, android.os.Process.myUid())) return false
+        return runCatching { File(dir, "cmdline").readBytes().toString(Charsets.UTF_8) }
             .getOrNull()?.let { ProcScan.runsDaemon(it, NodePaths.BINARY_NAME) } == true
+    }
 
-    /** Version reported by the bundled binary, e.g. "v32.1.0". */
+    /**
+     * Who holds the listening socket on [rpcPort], from [pid]'s own /proc entry.
+     *
+     * The app sends its RPC credentials to that endpoint, and the credential
+     * pair is the only thing standing between the phone and a process that won
+     * the port between the free-port check and the daemon's bind. Reading the
+     * socket table and the fd links of the daemon's PID answers the question the
+     * port probe cannot: is the listener the process that was just started?
+     *
+     * [probe] is the loopback connect used only when the daemon's namespace shows
+     * no listener at all: if the port answers anyway, the listener sits in
+     * another network namespace and is not the daemon's.
+     */
+    fun listenerOwner(
+        rpcPort: Int,
+        pid: Int? = pid(),
+        probe: (Int) -> Boolean = PortProbe::isListening
+    ): SocketOwner {
+        val target = pid ?: return SocketOwner.UNKNOWN
+        val dir = File("/proc/$target")
+        if (!dir.exists()) return SocketOwner.UNKNOWN
+        val tables = FILE_TABLES.map { name ->
+            runCatching { File(dir, name).readText() }.getOrNull()
+        }
+        return when (val owner = ProcScan.listenerOwner(tables, File(dir, "fd"), rpcPort)) {
+            SocketOwner.NOT_LISTENING ->
+                if (probe(rpcPort)) SocketOwner.FOREIGN else SocketOwner.NOT_LISTENING
+            else -> owner
+        }
+    }
+
+    private val FILE_TABLES = listOf("net/tcp", "net/tcp6")
+
+    /**
+     * Version reported by the bundled binary, e.g. "v32.1.0".
+     *
+     * The cached answer carries the build tag on its first line (see
+     * [BUILD_TAG]): an updated app ships a possibly different daemon, and the
+     * version of the previous one must not survive the update.
+     */
     fun version(): String {
         val cached = NodePaths.binaryVersionStamp(context)
         if (cached.exists()) {
-            val text = cached.readText().trim()
-            if (VersionProbe.isVersion(text)) return text
-            // An earlier build could cache the daemon's error line here instead
-            // of a version; it is no longer trusted.
+            val lines = runCatching { cached.readLines() }.getOrDefault(emptyList())
+            if (lines.firstOrNull()?.trim() == BUILD_TAG) {
+                val text = lines.getOrNull(1)?.trim().orEmpty()
+                if (VersionProbe.isVersion(text)) return text
+            }
+            // Either an older build's entry or the daemon's error line instead
+            // of a version: it is no longer trusted.
             runCatching { cached.delete() }
         }
         val detected = runCatching {
@@ -206,7 +305,7 @@ class BitcoindNode(private val context: Context) {
             if (!finished) null else VersionProbe.parse(output)
         }.getOrNull()
         if (!detected.isNullOrBlank()) {
-            runCatching { cached.writeText(detected) }
+            runCatching { cached.writeText("$BUILD_TAG\n$detected\n") }
         }
         return detected.orEmpty()
     }

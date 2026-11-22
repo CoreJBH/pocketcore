@@ -1,0 +1,14 @@
+versionCode 12 - 1.0.0
+
+- The bundled bitcoind is checked against a SHA-256 recorded at build time
+  before it runs, and the build script verifies Bitcoin Core's signed
+  SHA256SUMS.asc.
+- Chain data, the peer cache and the node settings are excluded from cloud
+  backup and from device-to-device transfer.
+- The RPC password is only sent to a socket the daemon itself holds.
+- A daemon left over from a killed app is stopped gracefully; it is only
+  killed when that stop fails.
+- Optional Tor routing through Orbot (127.0.0.1:9050).
+- Every connected peer is listed instead of the first six.
+- Watch-only descriptors and the debug log are copied as sensitive clipboard
+  items, so the system hides their contents.

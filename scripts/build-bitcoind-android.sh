@@ -38,10 +38,21 @@
 # HTTPS from their official hosts and checked against the SHA-256 values below,
 # so an unattended run needs no network state beyond that.
 #
+# The Bitcoin Core tarball is additionally checked against the release's own
+# SHA256SUMS, whose detached signature (SHA256SUMS.asc) is verified with GnuPG
+# before a single byte of the checksums is believed: the pinned SHA-256 below and
+# the signed list have to agree, and at least BITCOIN_MIN_SIGNATURES (default 1)
+# of the signatures must come from a builder whose fingerprint is in
+# BITCOIN_SIGNER_FINGERPRINTS. Missing public keys are fetched by fingerprint from
+# GPG_KEYSERVER into a keyring of this script's own (CACHE_DIR/gnupg), so the
+# host's keyring is left alone. gpg is therefore required for a download build;
+# GPG_VERIFY=0 skips the check for an offline or development run and says so.
+#
 # Usage:
 #   scripts/build-bitcoind-android.sh
 #   BITCOIN_SRC=/src/bitcoin-32.1 BOOST_SRC=/usr/include scripts/build-bitcoind-android.sh
 #   CLEAN=1 scripts/build-bitcoind-android.sh
+#   GPG_VERIFY=0 scripts/build-bitcoind-android.sh     # no signature check
 #
 set -euo pipefail
 
@@ -50,8 +61,33 @@ set -euo pipefail
 # build record in docs/BUILD-RECORD.md has to change with them.
 # ---------------------------------------------------------------------------
 BITCOIN_VERSION="32.1"
-BITCOIN_TARBALL_URL="https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${BITCOIN_VERSION}.tar.gz"
+BITCOIN_RELEASE_URL="https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}"
+BITCOIN_TARBALL_URL="$BITCOIN_RELEASE_URL/bitcoin-${BITCOIN_VERSION}.tar.gz"
 BITCOIN_TARBALL_SHA256="a5f2f61e32cf7f790641c9ec306a3c88ca7b5a556946956b1f35ffd7e27813f9"
+
+# The release's checksum list and its detached signature. Every signature on
+# SHA256SUMS.asc is reported by gpg; the ones that count are from the builders
+# listed below.
+BITCOIN_SHA256SUMS_URL="$BITCOIN_RELEASE_URL/SHA256SUMS"
+BITCOIN_SHA256SUMS_SIG_URL="$BITCOIN_RELEASE_URL/SHA256SUMS.asc"
+
+# Fingerprints of the Bitcoin Core builders who signed the 32.1 release, taken
+# from the issuer subpackets of that release's SHA256SUMS.asc. A signature from
+# any of them vouches for the checksum list; a key outside this set does not.
+# Override the whole list with BITCOIN_SIGNER_FINGERPRINTS.
+BITCOIN_SIGNER_FINGERPRINTS="${BITCOIN_SIGNER_FINGERPRINTS:-\
+152812300785C96444D3334D17565732E08E5E41 \
+0AD83877C1F0CD1EE9BD660AD7CC770B81FD22A8 \
+CFB16E21C950F67FA95E558F2EEB9F5CC09526C1 \
+F4FC70F07310028424EFC20A8E4256593F177720 \
+E61773CD6E01040E2F1BD78CE7E2984B6289C93A \
+F2CFC4ABD0B99D837EEBB7D09B79B45691DB4173 \
+ED9BDF7AD6A55E232E84524257FF9BDBCC301009 \
+A0083660F235A27000CD3C81CE6EC49945C17EA6}"
+# How many of those signatures the file has to carry. One builder's signature
+# already proves the list came from the release; raise it for a stricter run.
+BITCOIN_MIN_SIGNATURES="${BITCOIN_MIN_SIGNATURES:-1}"
+GPG_KEYSERVER="${GPG_KEYSERVER:-hkps://keys.openpgp.org}"
 
 BOOST_VERSION="1.86.0"
 BOOST_ARCHIVE_NAME="boost_1_86_0"
@@ -85,6 +121,9 @@ OUT_SO="$JNI_DIR/libbitcoind.so"
 
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build-arm64}"
 CACHE_DIR="${CACHE_DIR:-$ROOT_DIR/build-arm64-cache}"
+# A keyring of this script's own: verifying a release must not add keys to the
+# keyring of whoever runs the build.
+GPG_HOME_DIR="${GPG_HOME_DIR:-$CACHE_DIR/gnupg}"
 
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -101,6 +140,9 @@ if ! have curl && ! have wget; then
 fi
 if ! have sha256sum && ! have shasum; then
   die "need sha256sum or shasum to check the source archives"
+fi
+if [ "${GPG_VERIFY:-1}" = "1" ] && ! have gpg; then
+  die "gpg is required to verify SHA256SUMS.asc (install gnupg; or set GPG_VERIFY=0 to build without the signature check)"
 fi
 
 ntasks() {
@@ -145,6 +187,8 @@ fetch() { # fetch <url> <dest>
   mv "$dest.part" "$dest"
 }
 
+warn() { printf 'warning: %s\n' "$*" >&2; }
+
 verify_sha256() { # verify_sha256 <file> <expected> <what>
   local file="$1" expected="$2" what="$3" actual
   actual=$(sha256_of "$file")
@@ -152,6 +196,79 @@ verify_sha256() { # verify_sha256 <file> <expected> <what>
     die "$what SHA-256 mismatch: expected $expected, got $actual ($file)"
   fi
   log "$what SHA-256 verified: $actual"
+}
+
+# SHA-256 of <name> in a SHA256SUMS file, or empty when it lists no such file.
+# Lines are "<sha256>  <name>"; grep, cut and tr are the only tools this needs,
+# so the check runs on any host that can run gpg.
+sums_sha256() { # sums_sha256 <sha256sums> <name>
+  grep -E "[[:space:]]+$2$" "$1" 2>/dev/null | head -1 | cut -d' ' -f1 || true
+}
+
+# Fingerprints in a gpg status line, without spaces and in upper case, so a
+# pinned value compares equal however it was written.
+normalize_fingerprint() { printf '%s' "$1" | tr -d ' ' | tr 'a-f' 'A-F'; }
+
+# Fetches the public keys of the pinned builders into this script's keyring.
+# A key that cannot be fetched is only a problem if too few signatures are left.
+fetch_signer_keys() {
+  local fingerprint
+  for fingerprint in $BITCOIN_SIGNER_FINGERPRINTS; do
+    if GNUPGHOME="$GPG_HOME_DIR" gpg --batch --list-keys "$fingerprint" >/dev/null 2>&1; then
+      continue
+    fi
+    log "fetching the public key of builder $fingerprint"
+    GNUPGHOME="$GPG_HOME_DIR" gpg --batch --quiet --keyserver "$GPG_KEYSERVER" \
+      --recv-keys "$fingerprint" >/dev/null 2>&1 \
+      || warn "could not fetch $fingerprint from $GPG_KEYSERVER"
+  done
+}
+
+# Verifies the detached signature on a SHA256SUMS file and requires at least
+# BITCOIN_MIN_SIGNATURES valid signatures from a pinned builder.
+verify_sha256sums_signature() { # verify_sha256sums_signature <sha256sums> <sig>
+  local sums="$1" sig="$2" status_file fingerprint wanted count=0 bad=""
+  if [ "${GPG_VERIFY:-1}" != "1" ]; then
+    warn "GPG_VERIFY=0: SHA256SUMS.asc was NOT verified; only the pinned SHA-256 is checked"
+    return 0
+  fi
+  mkdir -p "$GPG_HOME_DIR"
+  chmod 700 "$GPG_HOME_DIR"
+  fetch_signer_keys
+
+  status_file=$(mktemp)
+  # --verify exits non-zero both for a bad signature and for a signature whose
+  # key is missing, so the status lines are read instead of the exit code.
+  if ! GNUPGHOME="$GPG_HOME_DIR" gpg --batch --status-fd 3 \
+    --verify "$sig" "$sums" 3>"$status_file" >/dev/null 2>&1; then
+    :
+  fi
+
+  bad=$(grep '^\[GNUPG:\] BADSIG' "$status_file" 2>/dev/null | cut -d' ' -f3 | tr '\n' ' ' || true)
+  if [ -n "$bad" ]; then
+    rm -f "$status_file"
+    die "SHA256SUMS.asc carries a BAD signature from $bad: the checksum list is not the one Bitcoin Core published"
+  fi
+
+  for fingerprint in $(grep '^\[GNUPG:\] VALIDSIG' "$status_file" 2>/dev/null \
+    | cut -d' ' -f3 | tr 'a-f' 'A-F' | sort -u || true); do
+    for wanted in $BITCOIN_SIGNER_FINGERPRINTS; do
+      if [ "$fingerprint" = "$(normalize_fingerprint "$wanted")" ]; then
+        count=$((count + 1))
+        log "SHA256SUMS.asc: good signature from builder $fingerprint"
+        break
+      fi
+    done
+  done
+  rm -f "$status_file"
+
+  if [ "$count" -eq 0 ]; then
+    die "SHA256SUMS.asc has no good signature from a pinned builder. Its public key may not be in $GPG_HOME_DIR: import the release keys or set BITCOIN_SIGNER_FINGERPRINTS"
+  fi
+  if [ "$count" -lt "${BITCOIN_MIN_SIGNATURES:-1}" ]; then
+    die "SHA256SUMS.asc has $count good signature(s) from a pinned builder, fewer than BITCOIN_MIN_SIGNATURES=${BITCOIN_MIN_SIGNATURES:-1}"
+  fi
+  log "SHA256SUMS.asc verified: $count signature(s) from a pinned builder"
 }
 
 # ---------------------------------------------------------------------------
@@ -209,6 +326,20 @@ if [ -n "${BITCOIN_SRC:-}" ]; then
 else
   mkdir -p "$CACHE_DIR"
   BITCOIN_TARBALL="$CACHE_DIR/bitcoin-${BITCOIN_VERSION}.tar.gz"
+  # The signed checksum list first: the hash below is only as good as the way it
+  # was obtained, and the release signature is what says the list is Core's.
+  BITCOIN_SUMS="$CACHE_DIR/bitcoin-${BITCOIN_VERSION}.SHA256SUMS"
+  fetch "$BITCOIN_SHA256SUMS_URL" "$BITCOIN_SUMS"
+  fetch "$BITCOIN_SHA256SUMS_SIG_URL" "$BITCOIN_SUMS.asc"
+  verify_sha256sums_signature "$BITCOIN_SUMS" "$BITCOIN_SUMS.asc"
+  LISTED_SHA=$(sums_sha256 "$BITCOIN_SUMS" "bitcoin-${BITCOIN_VERSION}.tar.gz")
+  if [ -z "$LISTED_SHA" ]; then
+    die "SHA256SUMS does not list bitcoin-${BITCOIN_VERSION}.tar.gz"
+  fi
+  if [ "$LISTED_SHA" != "$BITCOIN_TARBALL_SHA256" ]; then
+    die "SHA256SUMS lists $LISTED_SHA for the tarball, but this script pins $BITCOIN_TARBALL_SHA256"
+  fi
+  log "SHA256SUMS agrees with the pinned tarball hash"
   fetch "$BITCOIN_TARBALL_URL" "$BITCOIN_TARBALL"
   verify_sha256 "$BITCOIN_TARBALL" "$BITCOIN_TARBALL_SHA256" "Bitcoin Core $BITCOIN_VERSION tarball"
   BITCOIN_SRC="$CACHE_DIR/bitcoin-${BITCOIN_VERSION}"

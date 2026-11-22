@@ -123,7 +123,11 @@ fun NodeScreen(
             if (state.peers.isEmpty()) {
                 EmptyNote(if (state.status == NodeStatus.RUNNING) "No peers connected yet." else "Start the node to connect to the network.")
             } else {
-                state.peers.take(6).forEach { peer ->
+                // Every connected peer is listed, not just the first few: the
+                // card scrolls with the screen, and a peer list that stops at an
+                // arbitrary row makes the connection count in the header wrong
+                // about what it is showing.
+                state.peers.forEach { peer ->
                     PeerRow(
                         peer = peer,
                         expanded = expandedPeer == peer.address,
@@ -134,10 +138,6 @@ fun NodeScreen(
                         },
                         onBan = { pendingBan = peer }
                     )
-                }
-                if (state.peers.size > 6) {
-                    SpacerH(4)
-                    Muted("and ${state.peers.size - 6} more connected peers")
                 }
                 SpacerH(6)
                 Muted(

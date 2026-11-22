@@ -103,6 +103,12 @@ fun PocketCoreApp() {
                         NodeController.settings.setChargingOnly(value)
                         NodeController.applySettingsAndMaybeRestart(restartIfRunning = false)
                     },
+                    onTorProxyChange = { value ->
+                        // proxy= only takes effect when the daemon reads its
+                        // configuration, so a running node is restarted.
+                        NodeController.settings.setTorProxy(value)
+                        NodeController.applySettingsAndMaybeRestart()
+                    },
                     onRebuildAsFull = { NodeController.rebuildChainAsFull() },
                     onWipeData = { NodeController.wipeNodeData() }
                 )

@@ -116,6 +116,13 @@ object NodeController {
     private var autoRetried = false
     @Volatile private var ready = false
 
+    /**
+     * True once the listening socket on the RPC port was seen to belong to the
+     * daemon this app started (see [BitcoindNode.listenerOwner]). Reset for
+     * every start.
+     */
+    private var listenerVerified = false
+
     fun init(context: Context) {
         synchronized(this) {
             if (ready) return
@@ -314,13 +321,15 @@ object NodeController {
      *
      * A stop request carries the RPC credentials in Basic Auth, so it is only
      * ever sent to a daemon of this app: one whose process runs under our UID
-     * (only such processes are visible in /proc here) and whose endpoint is the
-     * one recorded in the bitcoin.conf this app wrote. A port held by anything
-     * else is left untouched and the node moves to a free one with a new
-     * credential pair.
+     * (only such processes are visible in /proc here), whose endpoint is the
+     * one recorded in the bitcoin.conf this app wrote, and whose own socket
+     * table shows it holding the listening socket on that port. A port held by
+     * anything else is left untouched and the node moves to a free one with a
+     * new credential pair.
      */
     private suspend fun resolvePorts(config: NodeSettingsState): PortResolver.Choice {
         val ownPids = node.ownDaemonPids()
+        val ownPid = ownPids.firstOrNull()
         val ownPort = if (ownPids.isEmpty()) null else NodeConfig.readRpcPort(appContext)
         if (ownPids.isNotEmpty() && ownPort == null) {
             // A daemon of ours runs but its endpoint is not recorded (no conf
@@ -332,11 +341,29 @@ object NodeController {
             defaultRpc = config.network.rpcPort,
             defaultP2p = config.network.p2pPort,
             ownDaemonRpcPort = ownPort,
-            stopOwnDaemon = { port -> RpcClient(port, config.rpcUser, config.rpcPassword).stopQuick() },
+            stopOwnDaemon = { port ->
+                // The credentials are only sent when the daemon process itself
+                // holds the listening socket on that port: an orphan that is
+                // still loading does not answer anyway, and a foreign listener
+                // must never see the password.
+                maySendCredentials(port, ownPid) &&
+                    RpcClient(port, config.rpcUser, config.rpcPassword).stopQuick()
+            },
             killStrays = { node.killStrayProcesses() }
         )
         return choice
     }
+
+    /**
+     * True when the RPC credentials may be sent to [port] on behalf of [pid].
+     *
+     * The only case that must be refused is a listening socket held by some
+     * other process; when nothing listens the request cannot reach anyone, and
+     * [SocketOwner.UNKNOWN] (a /proc entry that cannot be read) falls back to the
+     * previous behaviour rather than locking the node out of its own daemon.
+     */
+    private fun maySendCredentials(port: Int, pid: Int?): Boolean =
+        node.listenerOwner(port, pid) != SocketOwner.FOREIGN
 
     private suspend fun beginStartLocked(config: NodeSettingsState) {
         pollJob?.cancel()
@@ -359,6 +386,7 @@ object NodeController {
             )
         }
         lastHeaderLogRead = 0L
+        listenerVerified = false
         // The foreground service comes first: it keeps the app alive while the
         // daemon starts, and it must see STARTING so it does not start a second one.
         launchService()
@@ -444,6 +472,42 @@ object NodeController {
             }
             return
         }
+        if (!listenerVerified) {
+            // Before the first request of this start: the credentials are only
+            // sent to a listener that belongs to the daemon just launched. The
+            // free-port check ended before the daemon bound the endpoint, so
+            // this is the moment the port could have changed hands.
+            when (node.listenerOwner(client.port)) {
+                SocketOwner.OURS -> listenerVerified = true
+                SocketOwner.NOT_LISTENING -> {
+                    // Core opens its RPC server late in startup (after the block
+                    // index is loaded, which takes a while on a phone). Nothing
+                    // to talk to yet, and nothing to complain about - until the
+                    // startup grace has passed, when a daemon that is alive but
+                    // never binds is a stuck one.
+                    val warming = System.currentTimeMillis() - startedAt < STARTUP_GRACE_MS
+                    _state.update {
+                        it.copy(
+                            status = NodeStatus.STARTING,
+                            detail = if (warming) {
+                                "Warming up the node"
+                            } else {
+                                "RPC is not answering (the port never opened)"
+                            },
+                            rpcReachable = false
+                        )
+                    }
+                    return
+                }
+                SocketOwner.FOREIGN -> {
+                    handleForeignPort(null)
+                    return
+                }
+                // /proc could not be read: the local daemon is the documented
+                // best effort, as before.
+                SocketOwner.UNKNOWN -> listenerVerified = true
+            }
+        }
         try {
             val chain = client.blockchainInfo()
             val network = client.networkInfo()
@@ -493,7 +557,7 @@ object NodeController {
             if (error.code == HTTP_UNAUTHORIZED || error.code == HTTP_FORBIDDEN) {
                 // Something answered on the RPC port and refused this start's
                 // credentials, which exist only in this process.
-                handleForeignAnswer(error.code)
+                handleForeignPort(error.code)
                 return
             }
             val elapsed = System.currentTimeMillis() - startedAt
@@ -522,16 +586,18 @@ object NodeController {
     }
 
     /**
-     * The RPC port answers, but it refuses the credential pair of this start.
+     * The RPC port is not this app's to use: it either answers with a refusal
+     * for this start's credential pair ([code]) or its listening socket belongs
+     * to some other process.
      *
      * The pair was generated for this start alone and never left the app, so the
      * daemon it launched is not the one holding the port: another process took
-     * it after it was verified free. Basic Auth with an unknown password leaks
-     * nothing. The node moves to a verified free port once, and the retry is
+     * it after it was verified free. Authentication the app never sent is no
+     * leak. The node moves to a verified free port once, and the retry is
      * limited by [autoRetried] so a port that keeps changing hands ends in a
      * clear error instead of a start loop.
      */
-    private fun handleForeignAnswer(code: Int) {
+    private fun handleForeignPort(code: Int?) {
         pollJob?.cancel()
         pollJob = null
         scope.launch {
@@ -551,8 +617,13 @@ object NodeController {
                     beginStartLocked(settings.state.value)
                 } else {
                     fail(
-                        "Port ${_state.value.rpcPort} is answering, but not with this node's credentials " +
-                            "(HTTP $code). Another app holds it. Stop the other app or restart the phone, " +
+                        "Port ${_state.value.rpcPort} is " +
+                            if (code != null) {
+                                "answering, but not with this node's credentials (HTTP $code)."
+                            } else {
+                                "held by another process that is not this node."
+                            } +
+                            " Another app holds it. Stop the other app or restart the phone, " +
                             "then press START NODE."
                     )
                 }
@@ -623,11 +694,13 @@ object NodeController {
             return
         }
         _state.update { it.copy(status = NodeStatus.STOPPING, detail = "Stopping bitcoind") }
-        if (graceful) {
-            val client = rpc
-            if (client != null) {
-                runCatching { client.stop() }
-            }
+        val client = rpc
+        // A stop request is Basic Auth: it goes out only when the daemon is the
+        // one listening on the port. If the endpoint changed hands, the process
+        // is terminated without handing anyone the password.
+        val maySend = client != null && maySendCredentials(client.port, node.pid())
+        if (graceful && maySend) {
+            runCatching { client.stop() }
             if (!node.awaitExit(25)) node.destroy()
         } else {
             node.destroy()

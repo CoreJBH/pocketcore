@@ -24,6 +24,9 @@ import java.io.File
  */
 object NodeConfig {
 
+    /** Orbot's SOCKS5 listener, the address the Tor setting writes. */
+    const val TOR_PROXY = "127.0.0.1:9050"
+
     fun write(context: Context, settings: NodeSettingsState, rpcPort: Int, p2pPort: Int) {
         NodePaths.confFile(context).writeText(content(settings, rpcPort, p2pPort))
     }
@@ -47,6 +50,15 @@ object NodeConfig {
             appendLine("listen=1")
             appendLine("discover=0")
             appendLine("dnsseed=1")
+            // Optional Tor routing. proxy= is a global option (it can be narrowed
+            // to one network with a =network suffix instead), so it sits above
+            // the section header. With it set, Core sends every outbound peer
+            // connection through Orbot's SOCKS5 listener and resolves peer
+            // addresses there, so the node itself never talks to the internet
+            // directly.
+            if (settings.torProxy) {
+                appendLine("proxy=${TOR_PROXY}")
+            }
             appendLine("uacomment=POCKETCORE")
             appendLine("disablewallet=1")
             appendLine("txindex=0")

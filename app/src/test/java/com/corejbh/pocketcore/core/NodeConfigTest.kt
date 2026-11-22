@@ -12,10 +12,12 @@ class NodeConfigTest {
 
     private fun settings(
         pruneMb: Int = 550,
-        network: BitcoinNetwork = BitcoinNetwork.MAINNET
+        network: BitcoinNetwork = BitcoinNetwork.MAINNET,
+        torProxy: Boolean = false
     ) = NodeSettingsState(
         network = network,
         pruneMb = pruneMb,
+        torProxy = torProxy,
         rpcUser = "abcd1234efgh5678",
         rpcPassword = password
     )
@@ -69,5 +71,28 @@ class NodeConfigTest {
         assertTrue(conf.lines().contains("chain=main"))
         assertTrue(conf.lines().contains("[main]"))
         assertTrue(conf.lines().contains("rpcbind=127.0.0.1"))
+    }
+
+    @Test
+    fun writesNoProxyUnlessTheUserTurnedTorOn() {
+        val conf = NodeConfig.content(settings(), rpcPort = 8332, p2pPort = 8333)
+        assertFalse(conf.lines().any { it.startsWith("proxy=") })
+    }
+
+    /**
+     * `proxy=` is a global option (Core's own sample bitcoin.conf documents the
+     * per-network form as a `=network` suffix on the value), so it must sit above
+     * the section header: an option in a section it does not belong to makes Core
+     * reject the file.
+     */
+    @Test
+    fun writesTheOrbotProxyForEveryNetwork() {
+        for (network in BitcoinNetwork.entries) {
+            val conf = NodeConfig.content(settings(network = network, torProxy = true), 8332, 8333)
+            assertTrue(conf.lines().contains("proxy=${NodeConfig.TOR_PROXY}"))
+            assertEquals("127.0.0.1:9050", NodeConfig.TOR_PROXY)
+            val global = conf.substringBefore("[${network.chainArg}]")
+            assertTrue(global.lines().contains("proxy=${NodeConfig.TOR_PROXY}"))
+        }
     }
 }

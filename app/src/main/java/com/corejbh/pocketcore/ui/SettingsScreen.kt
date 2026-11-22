@@ -52,6 +52,7 @@ fun SettingsScreen(
     onPruneChange: (Int) -> Unit,
     onWifiOnlyChange: (Boolean) -> Unit,
     onChargingOnlyChange: (Boolean) -> Unit,
+    onTorProxyChange: (Boolean) -> Unit,
     onRebuildAsFull: () -> Unit,
     onWipeData: () -> Unit
 ) {
@@ -181,6 +182,26 @@ fun SettingsScreen(
             SpacerH(6)
             Muted(
                 "Pausing sends a graceful stop RPC so the chain state on disk stays consistent.",
+                color = PocketColors.Faint
+            )
+        }
+
+        SpacerH(12)
+        CardBox {
+            SectionLabel("Privacy")
+            SpacerH(6)
+            ToggleRow(
+                title = "Route through Tor (Orbot)",
+                description = "Send peer connections through Orbot's SOCKS5 proxy at 127.0.0.1:9050, " +
+                    "so no peer learns this phone's address. Orbot has to be running; the node " +
+                    "restarts when this changes.",
+                checked = config.torProxy,
+                onCheckedChange = onTorProxyChange
+            )
+            SpacerH(8)
+            Muted(
+                "The node's RPC stays on 127.0.0.1 and is never proxied. With Tor on, connecting and " +
+                    "downloading blocks run through the proxy and are slower than a direct connection.",
                 color = PocketColors.Faint
             )
         }
@@ -322,7 +343,7 @@ private fun DescriptorCard(scan: DescriptorState, state: NodeUiState) {
                     .clip(RoundedCornerShape(10.dp))
                     .background(PocketColors.CardElevated)
                     .padding(10.dp)
-                    .clickable { copyToClipboard(context, "Descriptor", saved) }
+                    .clickable { copyToClipboard(context, "Descriptor", saved, isSensitive = true) }
             ) {
                 Text(
                     text = saved,
@@ -504,7 +525,7 @@ private fun DebugLogDialog(onDismiss: () -> Unit) {
         },
         confirmButton = {
             TextButton(onClick = {
-                copyToClipboard(context, "debug.log", log)
+                copyToClipboard(context, "debug.log", log, isSensitive = true)
             }) {
                 Text("COPY LOG", color = PocketColors.Accent, fontWeight = FontWeight.SemiBold)
             }

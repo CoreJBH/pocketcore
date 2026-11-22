@@ -39,7 +39,9 @@ has — validating the Bitcoin blockchain itself.
    supports it. This is the same traffic any Bitcoin node produces: IP addresses
    of peers, protocol messages, and the public blockchain data itself. It is not
    sent to the developer or to any server the developer controls, and the app
-   sends no device identifiers along with it.
+   sends no device identifiers along with it. If you turn on **Route through Tor
+   (Orbot)** in Settings, those connections go through Orbot's SOCKS5 proxy at
+   `127.0.0.1:9050` and the node does not connect to peers directly at all.
 2. **Loopback RPC.** The app talks to its own daemon over `127.0.0.1` with a
    randomly generated username and password that never leave the device. The RPC
    port is bound to loopback only and is not reachable from the LAN or the
@@ -60,7 +62,10 @@ All data stays in the app's private storage, readable only by PocketCore:
 - the generated RPC password, sealed with an Android Keystore key.
 
 None of it is backed up or synchronized anywhere. `android:allowBackup="false"`
-keeps it out of Android's cloud backup.
+keeps it out of Android's cloud backup, and `res/xml/data_extraction_rules.xml`
+excludes `shared_prefs` and `files/node/` from both cloud backup and Android 12+
+device-to-device transfer, so a restored or newly transferred phone starts with
+an empty node directory instead of another device's chain state.
 
 A watch-only descriptor is used only to derive addresses locally so the node can
 search its own UTXO set for them; it is never transmitted to a third party.

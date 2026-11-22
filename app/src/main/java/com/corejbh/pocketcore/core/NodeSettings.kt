@@ -30,6 +30,15 @@ data class NodeSettingsState(
     val pruneMb: Int = 550,
     val wifiOnly: Boolean = false,
     val chargingOnly: Boolean = false,
+    /**
+     * Peer connections through Orbot's SOCKS5 proxy at 127.0.0.1:9050.
+     *
+     * A node that answers its own DNS and connects straight out hands its
+     * address to every peer it meets; the proxy is the phone's way of not doing
+     * that. It is off by default because the node cannot reach a peer at all
+     * while Orbot is not running.
+     */
+    val torProxy: Boolean = false,
     val rpcUser: String = "",
     val rpcPassword: String = "",
     val shouldRun: Boolean = false,
@@ -65,6 +74,7 @@ class NodeSettings(context: Context) {
             pruneMb = prefs.getInt(KEY_PRUNE, 550),
             wifiOnly = prefs.getBoolean(KEY_WIFI_ONLY, false),
             chargingOnly = prefs.getBoolean(KEY_CHARGING_ONLY, false),
+            torProxy = prefs.getBoolean(KEY_TOR_PROXY, false),
             rpcUser = user,
             rpcPassword = password,
             shouldRun = prefs.getBoolean(KEY_SHOULD_RUN, false),
@@ -82,6 +92,8 @@ class NodeSettings(context: Context) {
     fun setWifiOnly(value: Boolean) = edit { putBoolean(KEY_WIFI_ONLY, value) }
 
     fun setChargingOnly(value: Boolean) = edit { putBoolean(KEY_CHARGING_ONLY, value) }
+
+    fun setTorProxy(value: Boolean) = edit { putBoolean(KEY_TOR_PROXY, value) }
 
     fun setShouldRun(value: Boolean) = edit { putBoolean(KEY_SHOULD_RUN, value) }
 
@@ -115,6 +127,7 @@ class NodeSettings(context: Context) {
         private const val KEY_PRUNE = "prune_mb"
         private const val KEY_WIFI_ONLY = "wifi_only"
         private const val KEY_CHARGING_ONLY = "charging_only"
+        private const val KEY_TOR_PROXY = "tor_proxy"
         private const val KEY_RPC_USER = "rpc_user"
         private const val KEY_RPC_PASSWORD = "rpc_password"
         private const val KEY_SHOULD_RUN = "should_run"

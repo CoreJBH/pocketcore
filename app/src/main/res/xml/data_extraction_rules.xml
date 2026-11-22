@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    What may leave this app when the phone's data is backed up or moved.
+
+    Nothing of the node's may. The chain data, the peer cache and the RPC
+    credentials are not a backup candidate: they are regenerated or re-downloaded
+    from the network, they are the size of the phone's free space, and the
+    credential pair is a secret that a cloud copy would hand to a third party.
+    Both destinations are excluded - the cloud backup that Android uploads later,
+    and the direct device-to-device transfer on Android 12 and newer - so a
+    restored phone starts with an empty node directory instead of one whose
+    LevelDB and lock files came from another device.
+
+    <application android:allowBackup="false"> already turns the platform's own
+    backup agent off. These rules are the parts the app can state itself, and
+    they keep holding if that attribute is ever relaxed.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- shared_prefs holds the RPC user name and the descriptor; the
+             password itself is Keystore-wrapped and useless elsewhere. -->
+        <exclude domain="sharedpref" path="." />
+        <!-- The daemon's datadir, conf, snapshots and logs. -->
+        <exclude domain="file" path="node" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="node" />
+    </device-transfer>
+</data-extraction-rules>

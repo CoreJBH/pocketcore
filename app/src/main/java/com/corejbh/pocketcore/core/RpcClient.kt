@@ -21,7 +21,8 @@ class RpcException(val code: Int, message: String) : Exception(message)
  * running call (a descriptor scan) never blocks the polling loop.
  */
 class RpcClient(
-    private val port: Int,
+    /** Loopback port this client speaks to; the caller checks who listens on it. */
+    val port: Int,
     private val user: String,
     private val password: String
 ) {

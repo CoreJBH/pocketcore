@@ -102,10 +102,11 @@ Every figure on these screens is an RPC answer from the phone's own node.
 - **Live dashboard from RPC.** Block height and header height, sync percentage,
   chain state, peers in/out, mempool transaction count and memory, pruned chain
   size and prune height, uptime, difficulty, subversion, best block hash.
-- **Peers with offline country flags.** Every connected peer shows its flag,
-  `ip:port`, subversion, advertised services, ping and connection age, with one
-  tap to disconnect or ban it for 24 hours. The country table is bundled inside
-  the APK, so no address is ever sent to a GeoIP service.
+- **Peers with offline country flags.** Every connected peer is listed - all of
+  them, not a first handful - each with its flag, `ip:port`, subversion,
+  advertised services, ping and connection age, and one tap to disconnect or ban
+  it for 24 hours. The country table is bundled inside the APK, so no address is
+  ever sent to a GeoIP service.
 - **Chain explorer.** Look up any block by height or hash (`getblockhash`,
   `getblockheader`, `getblock 2`) with size, weight, merkle root, nonce and its
   transaction list; pruned blocks still show their verified header. Look up a
@@ -117,6 +118,15 @@ Every figure on these screens is an RPC answer from the phone's own node.
   a bare xpub/zpub/ypub and scan the UTXO set with `scantxoutset`: confirmed
   balance, addresses and unspent outputs, with no wallet database and no private
   key. Private keys and WIF are refused before anything reaches the node.
+- **Optional Tor routing.** One switch sends every peer connection through
+  Orbot's SOCKS5 proxy at `127.0.0.1:9050` (`proxy=` in `bitcoin.conf`), so no
+  peer learns the phone's address. The node's own RPC stays on loopback and is
+  never proxied.
+- **Checked before it runs.** The bundled daemon is hashed against the SHA-256
+  the APK was built with before the first block is validated, and the build
+  script verifies Bitcoin Core's signed `SHA256SUMS.asc` before it trusts any
+  checksum. The node directory and the settings are excluded from cloud backup
+  and from device-to-device transfer.
 - **Local JSON-RPC, kept out of sight.** The daemon listens on `127.0.0.1` and
   authenticates this app only. The RPC pair is generated on the device, sealed
   with an Android Keystore key and never shown, copied or written in the clear:
@@ -275,6 +285,7 @@ persistmempool=1
 listen=1
 discover=0
 dnsseed=1
+proxy=<127.0.0.1:9050, only when Tor routing is on>
 uacomment=POCKETCORE
 disablewallet=1
 txindex=0
@@ -291,7 +302,9 @@ port=<network P2P port>
 
 The trailing section matters: Bitcoin Core rejects network-specific options such
 as `rpcport`, `rpcbind`, `rpcallowip` and `port` when they appear outside the
-section of the active network. The values written here are the ones the app just
+section of the active network. `proxy=` is a global option (its per-network form
+is a `=network` suffix on the value), which is why the Tor switch writes it above
+the section, next to the connection options. The values written here are the ones the app just
 verified as free, so the daemon and the app always agree on the endpoint.
 
 The RPC password never reaches this file. `rpcauth` is Core's own scheme: a user,
@@ -300,7 +313,11 @@ itself is stored AES-256-GCM sealed under a key that never leaves the Android
 Keystore, and no screen shows or copies it. A
 port held by another app is never sent the credentials at all: the app locates
 its own daemon through `/proc` and otherwise moves to a free port with a fresh
-pair. `prune=0` means the full chain is kept.
+pair. Before the stop request and before the first request of a start it also
+reads that process's own `/proc/<pid>/net/tcp` table and its fd links, so the
+credentials go out only while the daemon itself holds the listening socket -
+the gap between the free-port check and bitcoind's bind is closed rather than
+assumed. `prune=0` means the full chain is kept.
 
 `v2transport` is left at Bitcoin Core 32.1's own default (on), so peers that
 support BIP324 negotiate the encrypted transport; a peer that does not falls
