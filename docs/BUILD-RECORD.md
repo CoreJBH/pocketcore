@@ -4,9 +4,11 @@ Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode
 
 ## versionCode 12 — second security review, and the all-peers list
 
-Built on 2026-11-22 from `main` at `6ab9cc6` (the commit this section was added
-in, `docs/` only). The daemon is unchanged from versionCode 10: same source, same
-NDK, same bytes, now checked at run time against a hash recorded at build time.
+Built on 2026-11-22 from `main` at `6ab9cc6`. This table is the `docs/`-only
+commit that follows it, so the APKs were produced before the section existed and
+no build output is part of the commit. The daemon is unchanged from versionCode
+10: same source, same NDK, same bytes, now checked at run time against a hash
+recorded at build time.
 
 | Item | Value |
 | --- | --- |
