@@ -2,6 +2,139 @@
 
 Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 9).
 
+## versionCode 20 — tenth review
+
+Built on 2026-11-23 from `main` at `30a32a8`. Ten review findings, all in the
+app: the daemon is unchanged, byte for byte. The export of a snapshot was also
+changed, so a file this phone writes can be loaded by another one.
+
+| Item | Value |
+| --- | --- |
+| Package | `com.corejbh.pocketcore` |
+| Version | 1.0.0 (versionCode 20) |
+| Release APK | `app-release.apk`, 8,495,651 bytes, SHA-256 `0aca771cd05f2cf6ea9582e9ef1b627e60015c3eab20e90c926eec549c0bda8a` |
+| Debug APK | `app-debug.apk`, 17,149,574 bytes, SHA-256 `bce9d1c14ee6c6b4639fa27c88d4bfa3d3689146c05713c12a04b91a3e5e39f6` |
+| Signing (release) | `keystore/pocketcore-release.jks`, alias `pocketcore`; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` (unchanged) |
+| Daemon in the APK | `lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
+| Lint | 0 errors; 16 warnings in `lintDebug`, 16 in `lintRelease` (`abortOnError = true`) |
+| Unit tests | 272 passing in `testDebugUnitTest` (243 before this build) |
+| zipalign | `zipalign -c -p 4` passes for both APKs |
+| In-place upgrade build | `com.jbitmstr.pocketcore`, versionCode 21, 17,149,638 bytes, SHA-256 `a9b282875e2bee92b6df847b3c2caba3b23ce77814e49a2a66ff8455cb43e4ba`, debug key `F5:07:48:15:C3:5C:6B:87:B2:5C:39:32:DF:22:83:48:86:8A:CB:B3:18:70:E2:01:18:35:66:EA:2A:A9:C0:11` (the key of versionCode 9-19) |
+
+The release checklist was `:app:testDebugUnitTest :app:lintDebug :app:lintRelease
+:app:assembleDebug :app:assembleRelease`, all green. As in the previous build,
+the upgrade APK is built in a tree outside the repository (`git archive` of
+`HEAD`, then the `applicationId` and `versionCode` patched in that copy), so
+`com.jbitmstr` and versionCode 21 are never part of this repository's tree. The
+upgrade keeps the installed app's identity, data directory included, so the
+chain at `<app files>/node/data` - `blocks/`, `chainstate/` and an imported
+snapshot - is carried over untouched.
+
+### The ten findings
+
+**ABORT could lose to the reply it caused.** `scanAbort()` makes the running
+`scantxoutset` return at once, with an error rather than a result, and the abort
+asked the daemon *before* it cancelled the scan job: the job then caught that
+error and wrote it over the state ABORT published. The job is cancelled first
+now, the cancelled state is published before the request goes out, and the scan
+coroutine checks that it is still wanted after the blocking scan call returns
+(`answerIfStillWanted`), so a reply that arrives after a cancel ends the
+coroutine instead of becoming a "scan failed" line. `abortInOrder` keeps the
+order, and both are unit tested (`DescriptorAbortTest`).
+
+**A stopped node could be flipped to ERROR.** `handleForeignPort` and
+`handleUnexpectedExit` cancel the poll loop, take the node mutex and then restart
+or fail - without asking whether the start that saw the problem was still the
+current one. A STOP that ran while the reply was in flight had already published
+STOPPED and cleared the state, and the handler wrote ERROR over it; the retry
+branch could also start a node the user had just stopped. Both now take the
+start's `generation` and return inside the mutex when `!isCurrent(generation)` or
+`!shouldRun`.
+
+**A valid xpub could be refused as a private key.** The private-key check
+lowercased the whole input and searched for `xprv`/`zprv` and friends anywhere in
+it. Base58 is case-sensitive, so an xpub whose payload happens to carry `XPRV` -
+or the lowercase letters by chance - was read as a private key and refused. The
+search is case-sensitive and anchored on a token, and an extended key is also
+decoded: a 78-byte Base58Check payload with private version bytes is refused
+however it is written (`DescriptorsTest` now accepts three such public keys).
+
+**Settings were written on the main thread.** Every setter ended in
+`SharedPreferences.commit()` and a full re-read of the store, called straight from
+the Compose callbacks - a synchronous disk write, and a Keystore read for the
+secrets, on the frame that drew the switch the user had just flipped. The setters
+are `suspend` and run on `Dispatchers.IO` behind one write lock; the UI starts a
+coroutine, and the action that follows a change (a restart) runs after the write
+has landed.
+
+**A Keystore hiccup replaced the RPC password.** `read()` generated a new
+password whenever the stored one could not be read, and wrote it over the
+ciphertext - which changed the pair a running daemon authenticates with while the
+value that would have decrypted was still there. A password is generated only
+when nothing is stored (`rpc_password_enc`, or the plaintext key of a build before
+versionCode 9, is absent); an entry that cannot be opened right now reports an
+empty pair that nothing sends - a start rotates the pair before it writes the
+conf, and the orphan stop skips a blank password.
+
+**The service decided before the settings were read.** `onStartCommand` read
+`settings.state.value.shouldRun`, which holds the defaults until `load()` has
+finished: a service recreated after a process death saw `false` and never started
+the node it was meant to resume. The check is gone; the command asks
+`NodeController.resumeAfterRecreate()`, which waits for the stored settings and
+then starts the node through the same gate every other start uses.
+
+**Snapshots outlived their use.** A new import left the previous `.dat` (and any
+`.part` a killed import wrote) in the folder, and a full wipe removed the chain
+but kept the snapshot files and the path the settings pointed at. An import
+now deletes the files it replaced (`NodePaths.staleSnapshotFiles`), and a full
+wipe takes the snapshots folder and forgets the stored path; a network-only wipe
+leaves them, because the file does not belong to the chain being deleted.
+
+**A busy port could be reported as free, and a failed search was silent.** The
+probe claimed 127.0.0.1 only, so a listener on every address (`0.0.0.0`) could
+pass; it now claims the wildcard address as well. `findFree` and
+`findFreeListenPair` returned the preferred port when nothing in the window was
+free, which handed bitcoind a port another app held: they return null now, and
+`PortResolver` answers with a reason the screen shows instead of a start that
+fails in Core. A busy P2P port with no free pair is not fatal - the node runs
+without inbound peers and says so.
+
+**The daemon's checksum was cached on disk.** `BinaryIntegrity` recorded its
+verdict in a stamp for the build and answered from it later, so a cold start
+after an update or a replaced file could pass without looking at the file it was
+about. The file is hashed at every check now; 10.7 MB is well under a second.
+
+**A transaction's fee had nothing to come from.** `getrawtransaction` was called
+with the boolean verbosity, which leaves each input without its `prevout`, so the
+input total was unknown and the fee could not be shown. It asks for verbosity 2,
+and the parameters are unit tested (`TransactionLookupTest`).
+
+The saved watch-only descriptor is loaded once from `NodeController.startup`
+rather than from a `LaunchedEffect` in SETTINGS that ran on every visit, which
+put a descriptor the user had just cleared back into the field.
+
+### The snapshot another phone can load
+
+`loadtxoutset` accepts a `.dat` only when the height, the block hash and the
+serialized UTXO set hash match a checkpoint compiled into the daemon (`m_assumeutxo_data`
+in `src/kernel/chainparams.cpp`). Core 32.1 carries mainnet 840,000 / 880,000 /
+910,000 / 935,000 / 965,000, testnet4 90,000 / 120,000 / 150,000 and signet
+160,000 / 290,000 / 320,000; `AssumeUtxo` holds those values, and `latest()`
+names the newest of each network. A dump at the node's own tip (`latest`) matches
+none of them, so it loads on the phone that made it and nowhere else.
+
+EXPORT SNAPSHOT therefore calls `dumptxoutset` with the newest checkpoint of the
+selected network as its rollback height. Before the dump it refuses a node that
+has not synced that far and a pruned node whose keep horizon is already above the
+checkpoint, each with the height and the fix (**STORAGE -> Full (prune=0)** for
+the pruned case); it compares the checkpoint's block hash with the node's own
+block at that height, and after the dump it compares the reply's `txoutset_hash`
+with the checkpoint, which is exactly what another phone's `loadtxoutset`
+compares. The card states the result: verified files load on another phone,
+anything else is reported as this phone's file only. The decisions are unit
+tested (`AssumeUtxoTest`), and the LOAD note names the checkpoints a file from
+another phone has to be at.
+
 ## versionCode 19 — ninth review
 
 Built on 2026-11-22 from `main` at `9e13c08`. Four review findings, all in the

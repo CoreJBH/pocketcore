@@ -270,8 +270,8 @@ to upgrade: that deletes `<app files>/node/data`, and the chain has to be
 validated again from the start. A build from another key would only install
 after an uninstall, and none has been published.
 
-The release APK is 8,487,559 bytes with SHA-256
-`69ff4838fbe2535ab0f179cc0e586b44b24c793d6fd83212e7170c51f05a05a9`; the full
+The release APK is 8,495,651 bytes with SHA-256
+`0aca771cd05f2cf6ea9582e9ef1b627e60015c3eab20e90c926eec549c0bda8a`; the full
 build record, including the bundled daemon's own hash, is in
 [docs/BUILD-RECORD.md](docs/BUILD-RECORD.md).
 
