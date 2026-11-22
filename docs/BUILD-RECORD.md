@@ -2,6 +2,109 @@
 
 Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 9).
 
+## versionCode 16 — sixth security and state review
+
+Built on 2026-11-22 from `main` at `46f5186`. Six review findings, all in the
+app: the daemon is unchanged, byte for byte.
+
+| Item | Value |
+| --- | --- |
+| Package | `com.corejbh.pocketcore` |
+| Version | 1.0.0 (versionCode 16) |
+| Release APK | `app-release.apk`, 8,481,495 bytes, SHA-256 `1196f9f4704bae12cf57ec6b894186a8ef5009a0bc04c43fdcef15c999e4c61b` |
+| Debug APK | `app-debug.apk`, 17,112,522 bytes, SHA-256 `9af51d1928e839df18c3af058ef0350e628e5447ee962294b8ef5c3aeda281d2` |
+| Signing (release) | `keystore/pocketcore-release.jks`, alias `pocketcore`; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` (unchanged) |
+| Daemon in the APK | `lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
+| Lint | 0 errors, 16 warnings in `lintDebug` and `lintRelease` (`abortOnError = true`) |
+| Unit tests | 186 passing in `testDebugUnitTest` (159 before this build) |
+| zipalign | `zipalign -c -p 4` passes for both APKs |
+
+The release checklist was `:app:testDebugUnitTest :app:lintDebug :app:lintRelease
+:app:assembleDebug :app:assembleRelease`, all green.
+
+### The six findings
+
+**A snapshot export or load could go to a port the gate had closed.**
+`exportSnapshot` and `loadSnapshot` took the client straight from the internal
+`rpc` field, skipping the `client()` gate that every other caller goes through,
+so a dump could be sent to a port whose listener this app had not proved is its
+own node (and, with the node stopped, the export card switched to "busy" with
+nothing that could ever advance). Both now ask `client()`, like the explorer,
+the scan and the peer actions; a stopped node gets the refusal in the card
+instead.
+
+**A debug.log of hundreds of megabytes could exhaust the heap.**
+`NodePaths.readFrom` allocated everything from the offset to the end of the
+file in one `ByteArray` - an `OutOfMemoryError` on a synced node, and past 2 GB
+also an `Int` byte-count overflow - and `BitcoindNode.outputTail` used
+`File.readLines()`, which loads the whole process log to show its last forty
+lines. The read now stops at `MAX_LOG_READ_BYTES` (1 MiB) and starts **at the
+offset** rather than at the end of the file, because the line it looks for - the
+`Binding RPC on address ...` a start writes first - sits at the beginning of its
+own window; the console tail goes through the 256 KB window of
+`NodePaths.readTail` that `debug.logTail` already used.
+
+**An orphan daemon was always killed, never stopped.** On Android 10+ SELinux
+keeps `/proc/<pid>/net/tcp` unreadable, so the socket check that proves the
+listener could not answer, the credentials were withheld (correctly), and the
+only route left was `killProcess` - a SIGKILL that can leave the chainstate
+needing a reindex. The new `OrphanStop` requires three facts about this app's
+own daemon instead: a process of this app's UID runs the bundled bitcoind (read
+from `/proc/<pid>/status` and `cmdline`, which stay readable), the port is the
+`rpcport` recorded in the `bitcoin.conf` this app wrote for that start (Core
+exits when it cannot bind it, so a live daemon from that file listens nowhere
+else), and there is a credential to present - the data directory's `.cookie`
+when one exists, otherwise the stored pair its `rpcauth` line was built from.
+The stop RPC is sent to loopback, and the app then waits up to 12 seconds for
+the process to exit (Core answers the stop and writes its state out afterwards,
+so the socket being free is not the same news). Only a stop that is refused,
+unanswered or still unfinished after that wait falls back to the kill it used
+before.
+
+**ABORT did nothing when the node was off.** `DescriptorScanController.abort()`
+returned early when no client existed, so a scan that was running when the node
+stopped (or that the daemon had already finished) left the card busy with a
+progress bar and a button that did nothing. The daemon is asked to abort only
+when there is a client; the state is reset either way, and only a scan that was
+actually running reports "Scan cancelled".
+
+**START NOW disabled the Wi-Fi / charger gate for the rest of the run.**
+`forceOverride` was set by `start(force = true)` and cleared only by STOP, so a
+manual start off Wi-Fi kept the gate off afterwards. It is now dropped as soon
+as the real condition is met: the next gate evaluation sees an open gate, clears
+the flag, and a later closure pauses the node the way the settings say.
+
+**One slow poll walked a RUNNING node back to STARTING.** A transport timeout
+(or Core's `-28`) inside the two-minute startup grace was reported as "Warming
+up the node" whatever the state had already reached, so a node that had been
+RUNNING for a minute dropped to STARTING on a single missed answer. The status
+is now left at RUNNING for a transient failure and only the detail line changes
+("RPC did not answer ... Retrying."); the next pass clears it. A daemon that is
+gone is still reported (the poll checks the process first), and a port that no
+longer listens is still the warm-up or the stuck-start message.
+
+### In-place upgrade APK for the installed app
+
+| Item | Value |
+| --- | --- |
+| Package | `com.jbitmstr.pocketcore` |
+| Version | 1.0.0 (versionCode 17) |
+| Build | `:app:assembleDebug` of the same source (`46f5186`) in a temporary copy of the tree, with `applicationId` and `versionCode` changed there only - nothing of this build is committed |
+| APK | `pocketcore-update-existing.apk`, 17,113,010 bytes, SHA-256 `ed17558f0907772ca082d32e9171e50188bb21b13c0c83adbf657a44db69764a` |
+| Signing | the Android debug key, certificate SHA-256 `f5:07:48:15:c3:5c:6b:87:b2:5c:39:32:df:22:83:48:86:8a:cb:b3:18:70:e2:01:18:35:66:ea:2a:a9:c0:11` - the same certificate as versionCode 9-16, so it updates in place and keeps the synced chain |
+| Daemon | identical bytes to the release build above (checked inside the APK) |
+
+### Build environment
+
+Same as versionCode 14-15: `ANDROID_USER_HOME=/workspace/.android` for the debug
+keystore, `--no-parallel --max-workers=1`, `ActiveProcessorCount=1`, SerialGC
+and `kotlin.compiler.execution.strategy=in-process`. The container's per-UID
+thread limit (256) was nearly exhausted by other builds during the day, so a few
+Gradle invocations started while other work was running failed with "unable to
+create native thread" before any task ran; every result above comes from a run
+that completed, and the checks were repeated as single tasks rather than one
+giant invocation. The flags live in the build command, not in the repository.
+
 ## versionCode 15 — fifth security review
 
 Built on 2026-11-22 from `main` at `009e380`. Five review findings, all in the
