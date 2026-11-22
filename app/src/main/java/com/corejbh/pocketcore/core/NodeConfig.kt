@@ -47,9 +47,18 @@ object NodeConfig {
             appendLine("maxconnections=8")
             appendLine("maxmempool=50")
             appendLine("persistmempool=1")
-            appendLine("listen=1")
+            // Inbound sockets and clearnet name lookups. With Tor routing on the
+            // node is not reachable at its own address and must not act as if it
+            // were: listen=0 stops it binding a clearnet inbound socket (which
+            // would also advertise the phone's address to peers), and dnsseed=0
+            // stops it resolving the hard-coded seed hostnames in the clear,
+            // which would hand the resolver - and anyone watching that DNS path -
+            // the phone's address and the fact that it runs a node. Peers are
+            // then reached from the addresses Core carries (fixed seeds,
+            // peers.dat) through the proxy instead.
+            appendLine(if (settings.torProxy) "listen=0" else "listen=1")
             appendLine("discover=0")
-            appendLine("dnsseed=1")
+            appendLine(if (settings.torProxy) "dnsseed=0" else "dnsseed=1")
             // Optional Tor routing. proxy= is a global option (it can be narrowed
             // to one network with a =network suffix instead), so it sits above
             // the section header. With it set, Core sends every outbound peer

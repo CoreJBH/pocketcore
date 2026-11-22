@@ -120,8 +120,10 @@ Every figure on these screens is an RPC answer from the phone's own node.
   key. Private keys and WIF are refused before anything reaches the node.
 - **Optional Tor routing.** One switch sends every peer connection through
   Orbot's SOCKS5 proxy at `127.0.0.1:9050` (`proxy=` in `bitcoin.conf`), so no
-  peer learns the phone's address. The node's own RPC stays on loopback and is
-  never proxied.
+  peer learns the phone's address. The switch also writes `listen=0` and
+  `dnsseed=0`: the node then binds no clearnet inbound socket and asks no public
+  DNS seed for peers, so neither the phone's address nor its seed lookups leave
+  in the clear. The node's own RPC stays on loopback and is never proxied.
 - **Checked before it runs.** The bundled daemon is hashed against the SHA-256
   the APK was built with before the first block is validated, and the build
   script verifies Bitcoin Core's signed `SHA256SUMS.asc` before it trusts any
@@ -285,9 +287,9 @@ dbcache=128
 maxconnections=8
 maxmempool=50
 persistmempool=1
-listen=1
+listen=<1 | 0 when Tor routing is on>
 discover=0
-dnsseed=1
+dnsseed=<1 | 0 when Tor routing is on>
 proxy=<127.0.0.1:9050, only when Tor routing is on>
 uacomment=POCKETCORE
 disablewallet=1
@@ -310,6 +312,14 @@ is a `=network` suffix on the value), which is why the Tor switch writes it abov
 the section, next to the connection options. The values written here are the ones the app just
 verified as free, so the daemon and the app always agree on the endpoint.
 
+Tor routing is not only `proxy=`. An inbound socket would advertise the phone's
+address to every peer, and the DNS seeds are resolved by hostname - in the clear
+- before any connection is proxied, which names the phone to its resolver. With
+the Tor switch on, `listen=0` and `dnsseed=0` are written next to `proxy=`, so
+the node keeps no clearnet listener and resolves no seed; it reaches the peers
+it already carries (Bitcoin Core's fixed seeds, `peers.dat`) through the proxy
+instead. Turned off, both return to `1`.
+
 The RPC password never reaches this file. `rpcauth` is Core's own scheme: a user,
 a fresh random salt per start, and `HMAC-SHA256(salt, password)`. The password
 itself is stored AES-256-GCM sealed under a key that never leaves the Android
@@ -320,7 +330,10 @@ pair. Before the stop request and before the first request of a start it also
 reads that process's own `/proc/<pid>/net/tcp` table and its fd links, so the
 credentials go out only while the daemon itself holds the listening socket -
 the gap between the free-port check and bitcoind's bind is closed rather than
-assumed. `prune=0` means the full chain is kept.
+assumed. The app also hands out no client at all until that proof is in: a
+request needs the node `RUNNING`, a verified listener and a live process, and
+the EXPLORE screen's lookups and broadcast are only offered while `RUNNING`.
+`prune=0` means the full chain is kept.
 
 `v2transport` is left at Bitcoin Core 32.1's own default (on), so peers that
 support BIP324 negotiate the encrypted transport; a peer that does not falls
@@ -457,6 +470,9 @@ its own binary.
   plugged in and on Wi-Fi is the intended sync setup.
 - Mobile networks rarely accept inbound connections, so the node usually runs
   with 8 outbound peers and no inbound ones.
+- STOP stays stopped: every start and every stop takes a new lifecycle number,
+  and a status reply that was already on its way when the button was pressed is
+  dropped instead of being written back over the new state.
 - Full validation from genesis on a phone takes days; AssumeUTXO exists exactly
   for that reason.
 - RPC is intentionally loopback-only. Exposing it to a LAN would mean opening a

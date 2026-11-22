@@ -59,20 +59,30 @@ fun ExploreScreen(state: NodeUiState, onOpenSettings: () -> Unit) {
 
         ChainStatusCard(state, onLatestBlock = { ExplorerController.openLatestBlock() })
 
-        if (state.status != NodeStatus.RUNNING) {
+        // Every action on this screen is an RPC request. They are only offered
+        // while the node is RUNNING, which the poll loop reaches after this
+        // start's listening socket was proved to be the app's own daemon; a node
+        // that is still STARTING has no client (NodeController.client() returns
+        // null), so the buttons answer that fact instead of failing behind them.
+        val nodeReady = state.status == NodeStatus.RUNNING
+        if (!nodeReady) {
             SpacerH(10)
             NoteBanner(
-                "The node is not running. Lookups work as soon as START NODE reports running.",
+                if (state.status == NodeStatus.STARTING) {
+                    "The node is starting. Lookups and broadcast work once it reports running."
+                } else {
+                    "The node is not running. Lookups work as soon as START NODE reports running."
+                },
                 PocketColors.Warning
             )
         }
 
         SpacerH(12)
-        BlockLookupCard(explorer, context)
+        BlockLookupCard(explorer, context, ready = nodeReady)
         SpacerH(12)
-        TransactionCard(explorer, context)
+        TransactionCard(explorer, context, ready = nodeReady)
         SpacerH(12)
-        BroadcastCard(explorer, context)
+        BroadcastCard(explorer, context, ready = nodeReady)
         scan.result?.let { result ->
             SpacerH(12)
             WatchOnlySummary(scan, result, state, onOpenSettings)
@@ -169,7 +179,7 @@ private fun ChainStatusCard(state: NodeUiState, onLatestBlock: () -> Unit) {
 }
 
 @Composable
-private fun BlockLookupCard(explorer: ExplorerState, context: android.content.Context) {
+private fun BlockLookupCard(explorer: ExplorerState, context: android.content.Context, ready: Boolean) {
     CardBox {
         SectionLabel("Block lookup")
         SpacerH(10)
@@ -183,7 +193,7 @@ private fun BlockLookupCard(explorer: ExplorerState, context: android.content.Co
         ActionButton(
             if (explorer.blockBusy) "READING..." else "LOOK UP BLOCK",
             onClick = { ExplorerController.lookupBlock() },
-            enabled = !explorer.blockBusy,
+            enabled = ready && !explorer.blockBusy,
             filled = true,
             modifier = Modifier.fillMaxWidth()
         )
@@ -287,7 +297,7 @@ private fun BlockDetail(block: BlockInfo, context: android.content.Context) {
 }
 
 @Composable
-private fun TransactionCard(explorer: ExplorerState, context: android.content.Context) {
+private fun TransactionCard(explorer: ExplorerState, context: android.content.Context, ready: Boolean) {
     CardBox {
         SectionLabel("Transaction lookup")
         SpacerH(10)
@@ -302,7 +312,7 @@ private fun TransactionCard(explorer: ExplorerState, context: android.content.Co
         ActionButton(
             if (explorer.txBusy) "READING..." else "LOOK UP TRANSACTION",
             onClick = { ExplorerController.lookupTransaction() },
-            enabled = !explorer.txBusy,
+            enabled = ready && !explorer.txBusy,
             filled = true,
             modifier = Modifier.fillMaxWidth()
         )
@@ -437,7 +447,7 @@ private fun TransactionDetail(transaction: TxSummary, context: android.content.C
 }
 
 @Composable
-private fun BroadcastCard(explorer: ExplorerState, context: android.content.Context) {
+private fun BroadcastCard(explorer: ExplorerState, context: android.content.Context, ready: Boolean) {
     CardBox {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(text = "\u27a4", color = PocketColors.Accent, fontSize = 15.sp)
@@ -466,7 +476,7 @@ private fun BroadcastCard(explorer: ExplorerState, context: android.content.Cont
         ActionButton(
             if (explorer.broadcastBusy) "BROADCASTING..." else "BROADCAST",
             onClick = { ExplorerController.broadcast() },
-            enabled = !explorer.broadcastBusy && parsed is RawTransaction.Parsed.Valid,
+            enabled = ready && !explorer.broadcastBusy && parsed is RawTransaction.Parsed.Valid,
             filled = true,
             modifier = Modifier.fillMaxWidth()
         )

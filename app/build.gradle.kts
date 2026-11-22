@@ -94,6 +94,18 @@ android {
         applicationId = "com.corejbh.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 14: fourth security review. No RPC request is built before
+        // this start's listening socket is proved to be the app's own daemon
+        // (client() needs RUNNING, a verified listener and a live process, and
+        // EXPLORE's lookups and broadcast are only offered while RUNNING); a
+        // reply from a poll pass that began before a stop or a new start is
+        // dropped instead of turning a stopped node back into a running one; the
+        // Keystore key is shared by every secret and is replaced only when the
+        // Keystore reports the key itself gone, so one entry with a bad GCM tag
+        // no longer takes the RPC password and the descriptor with it (the store
+        // and the settings store are locked too); and Tor routing now also
+        // writes listen=0 and dnsseed=0, so the node neither binds a clearnet
+        // inbound socket nor resolves the DNS seeds in the clear.
         // versionCode 13: third security review. The RPC credentials are handed
         // only to a listener proved to be this daemon (an unreadable /proc entry
         // is a refusal now, not a guess), the watch-only descriptor is encrypted
@@ -162,7 +174,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 13
+        versionCode = 14
         versionName = "1.0.0"
 
         // The hash of the bundled daemon, embedded for the integrity check in

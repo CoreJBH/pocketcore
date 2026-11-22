@@ -34,6 +34,23 @@ enum class NodeStatus { STOPPED, WAITING, STARTING, RUNNING, STOPPING, ERROR }
  */
 internal fun credentialsAllowed(owner: SocketOwner): Boolean = owner == SocketOwner.OURS
 
+/**
+ * Whether an RPC request may be sent at all, before it is even built.
+ *
+ * Fail-closed like [credentialsAllowed], and for the same reason: the credential
+ * pair exists only inside this process, so the only endpoint that may see it is
+ * a listening socket this app proved is its own daemon's ([listenerVerified])
+ * while that daemon is alive. [NodeStatus.RUNNING] is reached by the poll loop
+ * only after that proof, so a state that is still starting, stopping, waiting or
+ * failed has no client: work asked for in those states is refused rather than
+ * queued against a port that could be somebody else's.
+ */
+internal fun clientAllowed(
+    status: NodeStatus,
+    listenerVerified: Boolean,
+    alive: Boolean
+): Boolean = status == NodeStatus.RUNNING && listenerVerified && alive
+
 data class SnapshotModel(
     val path: String? = null,
     val label: String? = null,
@@ -152,8 +169,38 @@ object NodeController {
      * True once the listening socket on the RPC port was seen to belong to the
      * daemon this app started (see [BitcoindNode.listenerOwner]). Reset for
      * every start.
+     *
+     * Read from the poll loop that sets it and from every coroutine that asks
+     * [client] whether a request may go out, so a write here is visible to the
+     * next reader without a lock.
      */
-    private var listenerVerified = false
+    @Volatile private var listenerVerified = false
+
+    /**
+     * The start and stop edges of the daemon's lifecycle.
+     *
+     * Every start ([beginStartLocked]) and every stop ([stopProcess]) takes the
+     * next number. [refresh] remembers the number it began with and drops its
+     * reply when the number has moved on: an RPC answer that arrives after the
+     * node it describes was stopped (or started again) is a fact about a daemon
+     * that no longer owns the state, and writing it back would turn a node the
+     * user just stopped into a RUNNING one.
+     */
+    private val lifecycle = LifecycleGeneration()
+
+    private fun isCurrent(generation: Long): Boolean = lifecycle.isCurrent(generation)
+
+    /**
+     * Applies [transform] only while [generation] is still the current one.
+     *
+     * Everything [refresh] learns through RPC belongs to the daemon that was
+     * started in [generation]; a reply that arrives after a stop or a new start
+     * is dropped instead of written over the newer state.
+     */
+    private fun updateIfCurrent(generation: Long, transform: (NodeUiState) -> NodeUiState) {
+        if (!isCurrent(generation)) return
+        _state.update(transform)
+    }
 
     fun init(context: Context) {
         synchronized(this) {
@@ -201,8 +248,20 @@ object NodeController {
         return null
     }
 
-    /** The JSON-RPC client for the port the daemon is actually listening on. */
-    fun client(): RpcClient? = rpc?.takeIf { node.isAlive() }
+    /**
+     * The JSON-RPC client for the port the daemon is actually listening on, or
+     * null when no request may be sent right now.
+     *
+     * Null until this start's listening socket has been proved to be this app's
+     * daemon ([listenerVerified]) and the node is RUNNING: the credentials must
+     * never leave the app for an endpoint whose owner is still unproven, so a
+     * caller that receives a client knows its request is allowed to go out. The
+     * window a start opens - the free port was checked before the daemon bound
+     * it - is exactly the window [clientAllowed] closes.
+     */
+    fun client(): RpcClient? = rpc?.takeIf {
+        clientAllowed(_state.value.status, listenerVerified, node.isAlive())
+    }
 
     fun start(force: Boolean = false) {
         scope.launch {
@@ -409,6 +468,8 @@ object NodeController {
     }
 
     private suspend fun beginStartLocked(config: NodeSettingsState) {
+        // A new start: any reply still in flight describes the previous daemon.
+        lifecycle.next()
         pollJob?.cancel()
         pollJob = null
         _state.update {
@@ -508,6 +569,11 @@ object NodeController {
 
     private suspend fun refresh() {
         val client = rpc ?: return
+        // The lifecycle generation this pass is about. A start or stop that
+        // happens while the requests below are in flight takes the next number,
+        // and this pass then writes nothing: its reply describes a daemon that
+        // has already been stopped or replaced.
+        val generation = lifecycle.current()
         // A snapshot export holds Core while it walks the chainstate: polling it
         // would add RPC calls to the same process and flip the status line on a
         // timeout that only means "busy". The export card is what the screen
@@ -515,7 +581,9 @@ object NodeController {
         if (_state.value.snapshotExport.busy) return
         val status = _state.value.status
         if (!node.isAlive()) {
-            if (status == NodeStatus.STARTING || status == NodeStatus.RUNNING) {
+            if ((status == NodeStatus.STARTING || status == NodeStatus.RUNNING) &&
+                isCurrent(generation)
+            ) {
                 handleUnexpectedExit()
             }
             return
@@ -534,7 +602,7 @@ object NodeController {
                     // startup grace has passed, when a daemon that is alive but
                     // never binds is a stuck one.
                     val warming = System.currentTimeMillis() - startedAt < STARTUP_GRACE_MS
-                    _state.update {
+                    updateIfCurrent(generation) {
                         it.copy(
                             status = NodeStatus.STARTING,
                             detail = if (warming) {
@@ -548,7 +616,7 @@ object NodeController {
                     return
                 }
                 SocketOwner.FOREIGN -> {
-                    handleForeignPort(null)
+                    if (isCurrent(generation)) handleForeignPort(null)
                     return
                 }
                 SocketOwner.UNKNOWN -> {
@@ -559,7 +627,7 @@ object NodeController {
                     // loop simply asks again; past the startup grace a port that
                     // stays unaccounted for is reported instead of used.
                     val warming = System.currentTimeMillis() - startedAt < STARTUP_GRACE_MS
-                    _state.update {
+                    updateIfCurrent(generation) {
                         it.copy(
                             status = NodeStatus.STARTING,
                             detail = if (warming) {
@@ -602,7 +670,9 @@ object NodeController {
                 _state.value.peers
             }
             val chainStates = runCatching { client.chainStates() }.getOrDefault(emptyList())
-            _state.update {
+            // The answers above are from this generation's daemon. If the user
+            // pressed STOP meanwhile, they must not be written as RUNNING.
+            updateIfCurrent(generation) {
                 it.copy(
                     status = NodeStatus.RUNNING,
                     detail = if (chain.initialBlockDownload) "Initial block download" else null,
@@ -623,7 +693,7 @@ object NodeController {
             if (error.code == HTTP_UNAUTHORIZED || error.code == HTTP_FORBIDDEN) {
                 // Something answered on the RPC port and refused this start's
                 // credentials, which exist only in this process.
-                handleForeignPort(error.code)
+                if (isCurrent(generation)) handleForeignPort(error.code)
                 return
             }
             val elapsed = System.currentTimeMillis() - startedAt
@@ -631,7 +701,7 @@ object NodeController {
                 // Core is loading the block index and says so. That is the
                 // startup the screen already describes, never an error, and it
                 // is asked again on the next poll.
-                RpcCode.IN_WARMUP -> _state.update {
+                RpcCode.IN_WARMUP -> updateIfCurrent(generation) {
                     it.copy(
                         status = NodeStatus.STARTING,
                         detail = "Warming up the node",
@@ -641,7 +711,7 @@ object NodeController {
                 // No HTTP answer at all: within the startup grace that is still
                 // the warm-up, after it the daemon is not answering.
                 RpcCode.TRANSPORT -> if (elapsed < STARTUP_GRACE_MS) {
-                    _state.update {
+                    updateIfCurrent(generation) {
                         it.copy(
                             status = NodeStatus.STARTING,
                             detail = "Warming up the node",
@@ -649,7 +719,7 @@ object NodeController {
                         )
                     }
                 } else {
-                    _state.update {
+                    updateIfCurrent(generation) {
                         it.copy(
                             detail = "RPC is not answering (${error.message})",
                             rpcReachable = false
@@ -659,7 +729,7 @@ object NodeController {
                 // Core answered, and the answer was an error (RPC_MISC_ERROR or
                 // an HTTP status): the node is up, so the line is shown as it is
                 // rather than being mistaken for a slow start.
-                else -> _state.update {
+                else -> updateIfCurrent(generation) {
                     it.copy(
                         detail = "bitcoind answered with an error: ${error.message}",
                         rpcReachable = false
@@ -670,7 +740,7 @@ object NodeController {
             throw error
         } catch (error: Exception) {
             Log.w(TAG, "Polling failed: ${error.message}")
-            _state.update { it.copy(rpcReachable = false) }
+            updateIfCurrent(generation) { it.copy(rpcReachable = false) }
         }
     }
 
@@ -775,6 +845,8 @@ object NodeController {
     }
 
     private suspend fun stopProcess(graceful: Boolean) {
+        // A stop: a reply that is already on its way must not resurrect RUNNING.
+        lifecycle.next()
         pollJob?.cancel()
         pollJob = null
         if (!node.isAlive()) {

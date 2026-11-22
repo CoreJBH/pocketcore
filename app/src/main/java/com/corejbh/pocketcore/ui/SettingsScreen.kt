@@ -211,6 +211,13 @@ fun SettingsScreen(
                     "downloading blocks run through the proxy and are slower than a direct connection.",
                 color = PocketColors.Faint
             )
+            SpacerH(6)
+            Muted(
+                "Tor also turns incoming connections off (listen=0) and stops the node asking public " +
+                    "DNS seeds for peers (dnsseed=0), so the phone's address never leaves in the clear. " +
+                    "The node then reaches the peers it already knows through the proxy.",
+                color = PocketColors.Faint
+            )
         }
 
         SpacerH(12)

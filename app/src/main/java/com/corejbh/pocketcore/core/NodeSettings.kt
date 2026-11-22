@@ -55,6 +55,12 @@ data class NodeSettingsState(
  * The secrets - the RPC password and the watch-only descriptor - are kept in
  * [SecretStore] (AES-256-GCM under a Keystore key), migrated from the plaintext
  * SharedPreferences values of earlier builds.
+ *
+ * The setters, [setDescriptor] and [rotateCredentials] are `@Synchronized`: the
+ * start path rotates the credentials while the UI can be saving a descriptor,
+ * and both end with `_state.value = load()`, so two unlocked writers would
+ * publish a state built from a half-applied pair of values. They are short
+ * preference writes; one lock on this object is enough.
  */
 class NodeSettings(context: Context) {
 
@@ -111,6 +117,7 @@ class NodeSettings(context: Context) {
      * A blank value is removed rather than stored, and the plaintext keys of
      * earlier builds are dropped by [SecretStore.write] on the first save.
      */
+    @Synchronized
     fun setDescriptor(input: String, normalized: String?) {
         if (input.isBlank()) secrets.remove(KEY_DESCRIPTOR_INPUT) else secrets.write(KEY_DESCRIPTOR_INPUT, input)
         if (normalized.isNullOrBlank()) {
@@ -124,6 +131,7 @@ class NodeSettings(context: Context) {
     }
 
     /** A new credential pair, used when an RPC port had to be left to another app. */
+    @Synchronized
     fun rotateCredentials() {
         prefs.edit().putString(KEY_RPC_USER, generateToken(16)).apply()
         secrets.write(KEY_RPC_PASSWORD, generateToken(32))
@@ -131,6 +139,7 @@ class NodeSettings(context: Context) {
     }
 
     /** Applies one settings change and republishes the whole state. */
+    @Synchronized
     private fun edit(block: android.content.SharedPreferences.Editor.() -> Unit) {
         prefs.edit().apply(block).apply()
         _state.value = load()

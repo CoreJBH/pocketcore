@@ -95,4 +95,31 @@ class NodeConfigTest {
             assertTrue(global.lines().contains("proxy=${NodeConfig.TOR_PROXY}"))
         }
     }
+
+    /**
+     * A proxy on its own is not privacy. An inbound socket advertises the
+     * phone's own address to every peer it meets, and the DNS seeds are resolved
+     * by name - in the clear - before a single connection is proxied, which names
+     * the phone to its resolver and to anyone watching that path. Both are off
+     * whenever Tor is on, and on again when it is off.
+     */
+    @Test
+    fun torRoutingTurnsOffClearnetListeningAndSeedLookups() {
+        for (network in BitcoinNetwork.entries) {
+            val lines = NodeConfig.content(settings(network = network, torProxy = true), 8332, 8333).lines()
+            assertTrue("listen must be off with Tor on", lines.contains("listen=0"))
+            assertTrue("dnsseed must be off with Tor on", lines.contains("dnsseed=0"))
+            assertFalse(lines.contains("listen=1"))
+            assertFalse(lines.contains("dnsseed=1"))
+        }
+    }
+
+    @Test
+    fun directConnectionsStillListenAndUseSeedLookups() {
+        val lines = NodeConfig.content(settings(), 8332, 8333).lines()
+        assertTrue(lines.contains("listen=1"))
+        assertTrue(lines.contains("dnsseed=1"))
+        assertFalse(lines.contains("listen=0"))
+        assertFalse(lines.contains("dnsseed=0"))
+    }
 }
