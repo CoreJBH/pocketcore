@@ -2,6 +2,101 @@
 
 Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 9).
 
+## versionCode 15 — fifth security review
+
+Built on 2026-11-22 from `main` at `009e380`. Five review findings, all in the
+app: the daemon is unchanged, byte for byte.
+
+| Item | Value |
+| --- | --- |
+| Package | `com.corejbh.pocketcore` |
+| Version | 1.0.0 (versionCode 15) |
+| Release APK | `app-release.apk`, 8,480,007 bytes, SHA-256 `debbc5b1bf4301b4cbaefc1f251cd46dac86276736f0b3569b0422db0d00cc65` |
+| Debug APK | `app-debug.apk`, 17,107,706 bytes, SHA-256 `01e52646be486ddbe0414cf173b0e2e0537e299e13ea6eef37e4fde5a906305e` |
+| Signing (release) | `keystore/pocketcore-release.jks`, alias `pocketcore`; v1 (JAR) signature off, v2 on; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` |
+| Daemon in the APK | `lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
+| Lint | 0 errors, 16 warnings in `lintDebug` and `lintRelease` (`abortOnError = true`) |
+| Unit tests | 159 passing in `testDebugUnitTest` (135 before this build) |
+| zipalign | `zipalign -c -p 4` passes for both APKs |
+
+The release checklist was `:app:testDebugUnitTest :app:lintDebug :app:lintRelease
+:app:assembleDebug :app:assembleRelease`, all green.
+
+### The five findings
+
+**A started node could never leave STARTING on Android 10+.** Since Android 10,
+SELinux keeps every app from reading `/proc/<pid>/net/tcp`, so the check that
+proves the RPC port belongs to the daemon just launched could never read the
+socket tables: the verdict was UNKNOWN, and UNKNOWN is a refusal - the
+credentials were withheld forever and the node sat in STARTING while perfectly
+healthy. When the tables cannot be read, the owner is now established from
+three facts instead: the daemon process is alive (which also rules out a bind
+failure, since Core exits when it cannot bind), the RPC port answers on
+loopback, and the daemon's own debug.log shows Core binding the RPC endpoint -
+read only from the byte offset this start began at, so a bind line from an
+earlier run of the same port can never vouch for this one. A port that answers
+without that evidence is still FOREIGN and refused, and a verdict that survives
+all three is still UNKNOWN and refused. (An orphan daemon left by an earlier
+app process has no bind evidence in the new process's hands, so it keeps the
+previous treatment: refused, then killed ungracefully.)
+
+**The one-minute clipboard clear silently never ran on Android 10-12.** The
+clear compared the clipboard against the copy before deleting - but a
+background app's `getPrimaryClip()` answers null on Android 10 to 12, so the
+comparison always aborted and a sensitive copy stayed on the clipboard past
+its minute. An unreadable clipboard now clears without the comparison; where
+the clipboard is readable, a newer copy is still left alone.
+
+**Enabling Tor no longer trusts an Orbot nobody checked.** The switch now
+probes 127.0.0.1:9050 before turning the setting on: nothing listening means a
+dialog that says so, with an enable-anyway exit for leaving the setting on
+while Orbot starts. The settings text also documents Core's `onlynet=onion`
+and why PocketCore does not write it - the clearnet-addressed peers the node
+reaches through the proxy still hide this phone, and onion-only would drop
+them.
+
+**Editing the settings no longer flips a stopped node to WAITING.** The policy
+evaluation treated WAITING as the resting state of any node without a running
+daemon; the state now moves to WAITING only when the node is running or meant
+to run (`shouldRun`), so a node the user stopped stays STOPPED while the
+settings are edited.
+
+**zpub/ypub/vpub/upub keys are converted before they reach the node.** Core's
+descriptor language accepts the standard xpub/tpub prefixes only, so a watch-
+only scan with a BIP 84/49 key failed inside the node with "is not a valid
+descriptor". The keys are now rebased to xpub/tpub - the same BIP 32 key,
+standard version bytes, checksum recomputed - bare keys and keys inside a full
+descriptor alike, and vpub is wrapped as native segwit (wpkh) rather than
+taproot, which scanned the wrong scripts. A key that does not decode cleanly
+is refused with a check-the-paste message instead of sent to the node.
+
+**A Full (prune=0) rebuild no longer wipes the other networks.** The rebuild
+deletes only the selected network's chain data - mainnet's files at the data
+directory root, or the network's own subdirectory - and leaves the other
+networks' chains in place; the dialog says which network it deletes.
+
+### In-place upgrade APK for the installed app
+
+| Item | Value |
+| --- | --- |
+| Package | `com.jbitmstr.pocketcore` |
+| Version | 1.0.0 (versionCode 16) |
+| Build | `:app:assembleDebug` of the same source (`009e380`) in a temporary copy of the tree, with `applicationId` and `versionCode` changed there only - nothing of this build is committed |
+| APK | `pocketcore-update-existing.apk`, 17,107,710 bytes, SHA-256 `7273424a4023a8679be2e6c00ee9a4ef0c2c1d735bbed4496e49e62171f0d3ea` |
+| Signing | the Android debug key, certificate SHA-256 `f5:07:48:15:c3:5c:6b:87:b2:5c:39:32:df:22:83:48:86:8a:cb:b3:18:70:e2:01:18:35:66:ea:2a:a9:c0:11` - the same certificate as versionCode 9-15, so it updates in place and keeps the synced chain |
+| Daemon | identical bytes to the release build above (checked inside the APK) |
+
+### Build environment
+
+The container's passwd entry gives the build JVM `user.home=?`, so the Android
+tooling resolved the debug keystore against a relative `?` and failed
+`packageDebug`. The builds above ran with `ANDROID_USER_HOME=/workspace/.android`
+(where the debug keystore lives) and, for the same process cap as versionCode
+12-13, `--no-parallel --max-workers=1`, `ActiveProcessorCount=1`, SerialGC and
+`kotlin.compiler.execution.strategy=in-process`. The flags live in the build
+command, not in the repository; no source or build script behaviour differs
+because of them.
+
 ## versionCode 14 — fourth security review
 
 Built on 2026-11-22 from `main` at `d440215`. Four review findings, all in the
