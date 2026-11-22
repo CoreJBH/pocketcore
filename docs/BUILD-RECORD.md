@@ -2,6 +2,74 @@
 
 Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 9).
 
+## versionCode 17 — seventh review
+
+Built on 2026-11-22 from `main` at `87256ad`. Three review findings, all in the
+app: the daemon is unchanged, byte for byte.
+
+| Item | Value |
+| --- | --- |
+| Package | `com.corejbh.pocketcore` |
+| Version | 1.0.0 (versionCode 17) |
+| Release APK | `app-release.apk`, 8,484,147 bytes, SHA-256 `62e7ad3036ae4d9835ba4c7e2b9b2b1e228c152afb3020abd28a7360c96f9aa7` |
+| Debug APK | `app-debug.apk`, 17,120,602 bytes, SHA-256 `70d937c31b35972179ca1440e456f77f161a8e8b2bc8b65c28ab4dd5ab00b38f` |
+| Signing (release) | `keystore/pocketcore-release.jks`, alias `pocketcore`; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` (unchanged) |
+| Daemon in the APK | `lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
+| Lint | 0 errors, 16 warnings in `lintDebug` and `lintRelease` (`abortOnError = true`) |
+| Unit tests | 205 passing in `testDebugUnitTest` (186 before this build) |
+| zipalign | `zipalign -c -p 4` passes for both APKs |
+| In-place upgrade build | `com.jbitmstr.pocketcore`, versionCode 18, 17,120,614 bytes, SHA-256 `153e3bfd71d30e75a281c7700289163cb0ae5925976ed1b0bf1dc9d121ffb45b`, debug key `F5:07:48:15:C3:5C:6B:87:B2:5C:39:32:DF:22:83:48:86:8A:CB:B3:18:70:E2:01:18:35:66:EA:2A:A9:C0:11` (the key of versionCode 9-16) |
+
+The release checklist was `:app:testDebugUnitTest :app:lintDebug :app:lintRelease
+:app:assembleDebug :app:assembleRelease`, all green. The upgrade APK is built
+in a tree outside the repository (`git archive` of `HEAD`, then the
+`applicationId` and `versionCode` patched in that copy), so `com.jbitmstr` and
+versionCode 18 are never part of this repository's tree.
+
+### The three findings
+
+**A shrunken debug.log made a healthy node look foreign.** Core rewrites
+`debug.log` at startup when `-shrinkdebugfile=1` keeps it: it keeps the recent
+tail and drops the rest, so the byte offset a start recorded can end up past the
+end of the file. `NodePaths.readFrom` clamped the start to the file's length,
+which for a truncated log is the end - an empty window. `ListenerFallback` then
+found no `Binding RPC` line for this start, reported the port as
+`SocketOwner.FOREIGN`, and the node that had just bound it was killed and
+reported as another app's. The read now starts at 0 when the file is shorter
+than the offset (the 1 MiB cap still applies), so the shrink cannot hide this
+start's own bind line.
+
+**The snapshot operations could run into each other.** Import, export, load and
+clear all work on the same snapshot path and the same one chainstate walk, and
+each wrote the settings and the state on its own coroutine: an import that was
+still copying published its path after a CLEAR had already deleted the file, a
+LOAD could read a file CLEAR was deleting, and a dump could run while a load was
+rewriting the chainstate. The four now run one at a time behind `SnapshotGate`,
+and every step that writes the settings or `state` takes the node mutex as well.
+The gate is held for a whole copy or dump while the node mutex is held only
+briefly, so STOP and the Wi-Fi / charger policy are not blocked by a snapshot;
+the lock order (snapshot gate first, node mutex second, never the reverse) is
+documented on `SnapshotGate` and covered by a test.
+
+**Two RPC poll passes could overlap.** The poll loop, `refreshOnceNow()` after a
+peer action, and a snapshot action's refresh all asked for a pass without
+waiting for each other, and two passes read the same state and wrote it back in
+whatever order their replies arrived - an older reply landing after a newer one,
+or a stop described by a reply about the daemon before it. `RefreshGate` now
+lets one pass run and drops a request that arrives while it is in flight (the
+running pass is asking the same node a moment later), and releases itself in a
+`finally` so a failed pass cannot block refreshes for the life of the process.
+
+### Also in this build
+
+Explorer amounts and fees are integer satoshi arithmetic. Amounts are parsed
+once from their decimal text into satoshi `Long`s (`BtcAmount`), the outputs are
+summed as `Long`s and the fee is the inputs' total minus that sum, so a
+transaction whose prevouts cover its outputs exactly reports 0 sat instead of
+`-5e-17` BTC, and a thousand one-satoshi outputs add up to exactly 1,000 sat.
+The `Double` fields the screen reads are derived from those satoshis, and the
+explorer card formats BTC and satoshis straight from the integers.
+
 ## versionCode 16 — sixth security and state review
 
 Built on 2026-11-22 from `main` at `46f5186`. Six review findings, all in the
