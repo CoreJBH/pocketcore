@@ -63,6 +63,38 @@ internal fun clientAllowed(
 internal fun gateMayWait(nodeAlive: Boolean, shouldRun: Boolean): Boolean =
     nodeAlive || shouldRun
 
+/**
+ * The START NOW bypass after a gate check.
+ *
+ * START NOW (`force`) starts the node although the Wi-Fi / charger gate is
+ * closed; that is the point of it. The flag is not the setting, though: once
+ * the real condition is met there is nothing left to bypass, and keeping the
+ * flag would silently disable the gate for the rest of the run - the sixth
+ * review found the node staying off Wi-Fi after a manual start because the
+ * override was never dropped.
+ */
+internal fun forceOverrideAfterGate(forceOverride: Boolean, gateOpen: Boolean): Boolean =
+    forceOverride && !gateOpen
+
+/**
+ * The state a transient RPC failure leaves behind.
+ *
+ * A reply that never came ([RpcCode.TRANSPORT]) or a "still loading" answer
+ * ([RpcCode.IN_WARMUP]) says nothing about the daemon: a phone busy with the
+ * chainstate misses one poll's timeout while the node is perfectly healthy.
+ * Only the steps before RUNNING may be described as a warm-up, so a single slow
+ * answer cannot walk a RUNNING node back to STARTING (the sixth review's
+ * finding). A node before RUNNING keeps the existing behaviour: within the
+ * startup grace the failure is the warm-up, after it the status stays as it is
+ * and only the detail line changes.
+ */
+internal fun statusAfterTransientRpcFailure(status: NodeStatus, withinStartupGrace: Boolean): NodeStatus =
+    when {
+        status == NodeStatus.RUNNING -> NodeStatus.RUNNING
+        withinStartupGrace -> NodeStatus.STARTING
+        else -> status
+    }
+
 data class SnapshotModel(
     val path: String? = null,
     val label: String? = null,
@@ -253,8 +285,18 @@ object NodeController {
     }
 
     fun gateReason(context: Context = appContext): String? {
+        val blocked = gateBlocker(context)
+        // START NOW is a bypass for the start it asks for, not a permanent one:
+        // the flag is dropped as soon as the real condition is met, so a later
+        // gate closure pauses the node the way the settings say
+        // ([forceOverrideAfterGate]).
+        forceOverride = forceOverrideAfterGate(forceOverride, gateOpen = blocked == null)
+        return if (forceOverride) null else blocked
+    }
+
+    /** The Wi-Fi / charger gate as it stands, with no manual override applied. */
+    private fun gateBlocker(context: Context): String? {
         val config = settings.state.value
-        if (forceOverride) return null
         if (config.wifiOnly && !SystemState.isWifiConnected(context)) return "Waiting for Wi-Fi"
         if (config.chargingOnly && !SystemState.isCharging(context)) return "Waiting for charger"
         return null
@@ -449,16 +491,70 @@ object NodeController {
             defaultP2p = config.network.p2pPort,
             ownDaemonRpcPort = ownPort,
             stopOwnDaemon = { port ->
-                // The credentials are only sent when the daemon process itself
-                // holds the listening socket on that port: an orphan that is
+                // The daemon is only asked to stop with this start's own
+                // credentials when its listening socket is proved to be the
+                // daemon of this app ([listenerProvedOurs]): an orphan that is
                 // still loading does not answer anyway, and a foreign listener
                 // must never see the password.
-                maySendCredentials(port, ownPid) &&
+                if (listenerProvedOurs(port, ownPid)) {
                     RpcClient(port, config.rpcUser, config.rpcPassword).stopQuick()
+                } else {
+                    // Android 10+ keeps that socket table unreadable, so the
+                    // proof above cannot be had for an orphan. The orphan's own
+                    // files carry what the stop needs instead ([OrphanStop]).
+                    stopOrphanDaemon(port, config, ownPids)
+                }
             },
             killStrays = { node.killStrayProcesses() }
         )
         return choice
+    }
+
+    /** How long a daemon that answered the stop RPC gets to finish and exit. */
+    private const val ORPHAN_EXIT_WAIT_SECONDS = 12L
+
+    /**
+     * Ends a daemon of this app that this process did not start, with the stop
+     * RPC rather than a kill, and waits for it to be gone.
+     *
+     * Android 10 and above keep `/proc/<pid>/net/tcp` unreadable, so
+     * [listenerProvedOurs] cannot prove the listener and the previous build
+     * always killed the orphan - which can leave the chainstate needing a
+     * reindex. The three facts [OrphanStop] requires instead are all about this
+     * app's own daemon and its own conf, and the credential is the pair that
+     * daemon was started with.
+     *
+     * Returns true only once every pid in [pids] is gone: Core answers the stop
+     * RPC and then writes its state out, so the caller's kill is held back until
+     * the process itself has ended (or the bounded wait ran out).
+     */
+    private suspend fun stopOrphanDaemon(
+        port: Int,
+        config: NodeSettingsState,
+        pids: List<Int>
+    ): Boolean {
+        val credentials = OrphanStop.credentials(
+            cookie = NodePaths.readCookie(appContext, config.network),
+            user = config.rpcUser,
+            password = config.rpcPassword
+        )
+        if (!OrphanStop.maySend(pids, port, NodeConfig.readRpcPort(appContext), credentials)) {
+            Log.w(TAG, "Not stopping the daemon on port $port gracefully: it is not this app's to contact.")
+            return false
+        }
+        for (credential in credentials) {
+            val outcome = runCatching {
+                RpcClient(port, credential.user, credential.password).call("stop", timeoutMs = 5_000)
+            }
+            // A daemon that is already on its way out answers with "shutting
+            // down" instead of a result. That is the same news as an answered
+            // stop: the wait below is what decides whether it is gone.
+            val answered = outcome.isSuccess ||
+                outcome.exceptionOrNull()?.message?.contains("shutting down", true) == true
+            if (!answered) continue
+            return node.awaitPidExit(pids, ORPHAN_EXIT_WAIT_SECONDS)
+        }
+        return false
     }
 
     /**
@@ -476,11 +572,24 @@ object NodeController {
      * finds the endpoint free and generates a fresh credential pair.
      */
     private fun maySendCredentials(port: Int, pid: Int?): Boolean {
-        if (credentialsAllowed(node.listenerOwner(port, pid))) return true
+        if (listenerProvedOurs(port, pid)) return true
         Log.w(TAG, "Not sending RPC credentials to port $port: its listener is not proven to be this node.")
         node.killStrayProcesses()
         return false
     }
+
+    /**
+     * True when the listening socket on [port] is proved to belong to the
+     * daemon [pid] - by the /proc socket table where it can be read, by the
+     * daemon's own debug.log where it cannot ([BitcoindNode.listenerOwner]).
+     *
+     * This is the proof the stop path above starts from; unlike
+     * [maySendCredentials] a refusal here has no side effect, because the
+     * Android 10+ caller still has the orphan's own files to try
+     * ([stopOrphanDaemon]).
+     */
+    private fun listenerProvedOurs(port: Int, pid: Int?): Boolean =
+        credentialsAllowed(node.listenerOwner(port, pid))
 
     private suspend fun beginStartLocked(config: NodeSettingsState) {
         // A new start: any reply still in flight describes the previous daemon.
@@ -713,34 +822,34 @@ object NodeController {
                 return
             }
             val elapsed = System.currentTimeMillis() - startedAt
+            val withinGrace = elapsed < STARTUP_GRACE_MS
+            // A transient failure must not walk a RUNNING node back to STARTING
+            // ([statusAfterTransientRpcFailure]); the detail line still tells
+            // the truth, and the next poll clears it when Core answers again.
+            val running = status == NodeStatus.RUNNING
             when (error.code) {
                 // Core is loading the block index and says so. That is the
                 // startup the screen already describes, never an error, and it
                 // is asked again on the next poll.
                 RpcCode.IN_WARMUP -> updateIfCurrent(generation) {
                     it.copy(
-                        status = NodeStatus.STARTING,
-                        detail = "Warming up the node",
+                        status = statusAfterTransientRpcFailure(status, withinStartupGrace = true),
+                        detail = if (running) "RPC is busy (${error.message})" else "Warming up the node",
                         rpcReachable = false
                     )
                 }
                 // No HTTP answer at all: within the startup grace that is still
                 // the warm-up, after it the daemon is not answering.
-                RpcCode.TRANSPORT -> if (elapsed < STARTUP_GRACE_MS) {
-                    updateIfCurrent(generation) {
-                        it.copy(
-                            status = NodeStatus.STARTING,
-                            detail = "Warming up the node",
-                            rpcReachable = false
-                        )
-                    }
-                } else {
-                    updateIfCurrent(generation) {
-                        it.copy(
-                            detail = "RPC is not answering (${error.message})",
-                            rpcReachable = false
-                        )
-                    }
+                RpcCode.TRANSPORT -> updateIfCurrent(generation) {
+                    it.copy(
+                        status = statusAfterTransientRpcFailure(status, withinStartupGrace = withinGrace),
+                        detail = when {
+                            running -> "RPC did not answer (${error.message}). Retrying."
+                            withinGrace -> "Warming up the node"
+                            else -> "RPC is not answering (${error.message})"
+                        },
+                        rpcReachable = false
+                    )
                 }
                 // Core answered, and the answer was an error (RPC_MISC_ERROR or
                 // an HTTP status): the node is up, so the line is shown as it is
@@ -1005,6 +1114,23 @@ object NodeController {
             val network = settings.state.value.network
             val name = displayName?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
                 ?: "pocketcore-${network.chainArg}.dat"
+            // The same gate every other RPC caller goes through ([client]): a
+            // dump is a long request to the daemon, and it may only be sent to a
+            // port this app has proved is its own node. The gate is asked
+            // before the card switches to "busy", so a stopped node gets the
+            // refusal instead of a progress line that cannot advance.
+            val client = client()
+            if (client == null) {
+                _state.update {
+                    it.copy(
+                        snapshotExport = SnapshotExportModel(
+                            fileName = name,
+                            error = "Start the node before exporting a snapshot."
+                        )
+                    )
+                }
+                return@launch
+            }
             _state.update {
                 it.copy(
                     snapshotExport = SnapshotExportModel(
@@ -1016,11 +1142,7 @@ object NodeController {
             }
             val temp = NodePaths.snapshotExportFile(appContext, network, System.currentTimeMillis())
             val partial = File(temp.absolutePath + INCOMPLETE_SUFFIX)
-            val client = rpc
             val outcome = runCatching {
-                if (client == null || !node.isAlive()) {
-                    throw IllegalStateException("Start the node before exporting a snapshot.")
-                }
                 // Core refuses a path that already exists, and a dump it started
                 // earlier may have left one of these behind.
                 temp.delete()
@@ -1072,9 +1194,11 @@ object NodeController {
 
     fun loadSnapshot() {
         scope.launch {
-            val client = rpc
+            // Through the gate as well: loading a snapshot writes the chainstate
+            // of the daemon on the other end, and that must be this app's node.
+            val client = client()
             val path = settings.state.value.snapshotPath
-            if (client == null || !node.isAlive()) {
+            if (client == null) {
                 _state.update { it.copy(snapshot = it.snapshot.copy(error = "Start the node before loading a snapshot.")) }
                 return@launch
             }

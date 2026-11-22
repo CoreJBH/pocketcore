@@ -224,6 +224,31 @@ class BitcoindNode(private val context: Context) {
     fun ownDaemonRunning(): Boolean = ownDaemonPids().isNotEmpty()
 
     /**
+     * Waits up to [seconds] for every pid in [pids] to be gone.
+     *
+     * A stop RPC is answered before the daemon has finished: Core closes its
+     * RPC server early in the shutdown and then writes the chain state out,
+     * which on a phone takes seconds. The socket being free therefore says
+     * nothing about the data being safe, and this is what the caller waits on
+     * before deciding that a graceful stop failed and a kill is all that is
+     * left.
+     */
+    fun awaitPidExit(pids: List<Int>, seconds: Long): Boolean {
+        if (pids.isEmpty()) return true
+        val deadline = System.currentTimeMillis() + seconds * 1_000
+        while (System.currentTimeMillis() < deadline) {
+            if (pids.none { isAlivePid(it) }) return true
+            try {
+                Thread.sleep(100)
+            } catch (error: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return pids.none { isAlivePid(it) }
+            }
+        }
+        return pids.none { isAlivePid(it) }
+    }
+
+    /**
      * True while [pid] is a daemon of this app.
      *
      * The binary name and the app's UID are both required: a PID that was reused
@@ -359,14 +384,16 @@ class BitcoindNode(private val context: Context) {
         return detected.orEmpty()
     }
 
-    /** Last lines the daemon wrote to stdout/stderr. */
-    fun outputTail(maxLines: Int = 40): String {
-        val file = NodePaths.processLog(context)
-        if (!file.exists()) return ""
-        return runCatching {
-            file.readLines().takeLast(maxLines).joinToString("\n")
-        }.getOrDefault("")
-    }
+    /**
+     * Last lines the daemon wrote to stdout/stderr.
+     *
+     * The window is read through [NodePaths.readTail] rather than with
+     * `File.readLines()`: that call loads the whole file into one string, and
+     * the process log of a daemon that keeps talking (a long sync, a chainstate
+     * rebuild) would be allocated in full on the phone's heap just to show the
+     * last few lines.
+     */
+    fun outputTail(maxLines: Int = 40): String = NodePaths.readTail(NodePaths.processLog(context), maxLines)
 
     /** Last lines of bitcoind's own debug.log for the configured network. */
     fun debugLogTail(network: BitcoinNetwork, maxLines: Int = 400): String =

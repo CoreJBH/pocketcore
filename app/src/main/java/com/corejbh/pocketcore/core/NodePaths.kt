@@ -106,23 +106,54 @@ object NodePaths {
     }
 
     /**
-     * Reads [file] from byte [offset] to the end, or "" when it cannot be read.
+     * Reads [file] from byte [offset], at most [maxBytes] of it, or "" when it
+     * cannot be read.
      *
      * The reader of a log that is being written to uses an offset taken before
      * the write it cares about: bytes before the offset belong to earlier runs
      * and must not be read as evidence for this one (see [ListenerFallback]).
+     *
+     * The cap is what keeps the read bounded: debug.log grows into hundreds of
+     * megabytes during a sync, and allocating "everything after the offset" in
+     * one array either threw OutOfMemoryError or, past 2 GB, overflowed the
+     * `Int` byte count. The window starts **at** the offset rather than at the
+     * end of the file because the line being looked for is written right after
+     * the offset: the bind evidence of a start sits in the first bytes of its
+     * own window, and reading the tail instead would drop exactly that line.
      */
-    fun readFrom(file: File, offset: Long): String {
+    fun readFrom(file: File, offset: Long, maxBytes: Int = MAX_LOG_READ_BYTES): String {
         if (!file.exists()) return ""
         return runCatching {
             RandomAccessFile(file, "r").use { access ->
-                val start = offset.coerceIn(0L, access.length())
+                val length = access.length()
+                val start = offset.coerceIn(0L, length)
+                val wanted = minOf(length - start, maxBytes.coerceAtLeast(0).toLong()).toInt()
                 access.seek(start)
-                val bytes = ByteArray((access.length() - start).toInt())
+                val bytes = ByteArray(wanted)
                 access.readFully(bytes)
                 String(bytes, Charsets.UTF_8)
             }
         }.getOrDefault("")
+    }
+
+    /**
+     * Core's cookie file for [network], in the data directory it was started in.
+     *
+     * Core writes `.cookie` only when no `rpcauth` / `rpcpassword` is configured,
+     * so a daemon started from this app's bitcoin.conf does not create one. It
+     * is read when a node of this app outlived the app process: a stop request
+     * that can present an existing cookie is a cleaner end than a SIGKILL.
+     */
+    fun cookieFile(context: Context, network: BitcoinNetwork): File =
+        File(networkDataDir(context, network), ".cookie")
+
+    /** The cookie's text (`user:password`), or null when there is none. */
+    fun readCookie(context: Context, network: BitcoinNetwork): String? {
+        val file = cookieFile(context, network)
+        if (!file.isFile) return null
+        return runCatching {
+            if (file.length() > MAX_COOKIE_BYTES) null else file.readText().trim()
+        }.getOrNull()?.takeIf { it.isNotEmpty() }
     }
 
     private fun filesRoot(context: Context): File = context.filesDir
@@ -159,4 +190,16 @@ object NodePaths {
     }
 
     const val BINARY_NAME = "libbitcoind.so"
+
+    /**
+     * Upper bound of one log read.
+     *
+     * A megabyte is far more than the window a start's bind evidence or an exit
+     * explanation needs, and small enough that the read cannot exhaust the heap
+     * of an app that is already running a node.
+     */
+    const val MAX_LOG_READ_BYTES = 1024 * 1024
+
+    /** Core's cookie is `user:password`; anything larger is not a cookie. */
+    private const val MAX_COOKIE_BYTES = 4L * 1024L
 }

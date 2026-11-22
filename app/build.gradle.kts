@@ -94,6 +94,19 @@ android {
         applicationId = "com.corejbh.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 16: sixth security and state review. The UTXO snapshot
+        // export and load go through the same client() gate as every other RPC
+        // caller, so a dump is never sent to a port this app has not proved is
+        // its own node; the log reads are bounded (debug.log past the read
+        // offset is read in at most 1 MiB, the daemon's console tail through the
+        // 256 KB window) so a log that grew to hundreds of megabytes can no
+        // longer throw OutOfMemoryError; an orphan daemon left by a killed app
+        // process is ended with the stop RPC from its own cookie or stored
+        // credentials and waited on, instead of being killed outright, which
+        // can leave the chainstate needing a reindex; ABORT clears a scan state
+        // even when the node is gone; START NOW's bypass is dropped once the
+        // Wi-Fi / charger condition is actually met; and a temporary RPC
+        // timeout no longer walks a RUNNING node back to STARTING.
         // versionCode 15: fifth security review. On Android 10+ SELinux keeps
         // the app from reading /proc/<pid>/net/tcp, so the owner of the RPC
         // port could not be established and a node that started fine never
@@ -192,7 +205,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 15
+        versionCode = 16
         versionName = "1.0.0"
 
         // The hash of the bundled daemon, embedded for the integrity check in

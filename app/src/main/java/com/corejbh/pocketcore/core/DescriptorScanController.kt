@@ -30,6 +30,22 @@ data class DescriptorState(
 }
 
 /**
+ * The state ABORT leaves behind.
+ *
+ * The card must come out of "scanning" whether or not the node can be asked:
+ * a scan that was running when the node was stopped (or that the daemon had
+ * already finished) otherwise kept its progress line and its busy flag with
+ * nothing behind them, and ABORT did nothing at all - the sixth review's
+ * finding. Only a scan that was actually running reports the cancellation; an
+ * idle card keeps what it was showing.
+ */
+internal fun abortedScanState(current: DescriptorState): DescriptorState = current.copy(
+    busy = false,
+    progress = 0.0,
+    error = if (current.busy) "Scan cancelled." else current.error
+)
+
+/**
  * Watch-only balance scanning without a wallet.
  *
  * `scantxoutset` walks the confirmed UTXO set for a public descriptor, so the
@@ -142,12 +158,17 @@ object DescriptorScanController {
     }
 
     fun abort() {
-        val client = NodeController.client() ?: return
+        // The daemon is asked to abort only when a client exists, but the state
+        // is reset either way: with the node stopped there is nothing left to
+        // ask, and the card still has to stop reporting a scan ([abortedScanState]).
+        val client = NodeController.client()
         scope.launch {
-            runCatching { client.scanAbort() }
+            if (client != null) runCatching { client.scanAbort() }
             pollJob?.cancel()
+            pollJob = null
             scanJob?.cancel()
-            _state.update { it.copy(busy = false, progress = 0.0, error = "Scan cancelled.") }
+            scanJob = null
+            _state.update { abortedScanState(it) }
         }
     }
 
