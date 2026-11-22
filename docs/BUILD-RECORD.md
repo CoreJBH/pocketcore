@@ -2,6 +2,42 @@
 
 Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 9).
 
+## versionCode 12 — second security review, and the all-peers list
+
+Built on 2026-11-22 from `main` at `6ab9cc6` (the commit this section was added
+in, `docs/` only). The daemon is unchanged from versionCode 10: same source, same
+NDK, same bytes, now checked at run time against a hash recorded at build time.
+
+| Item | Value |
+| --- | --- |
+| Package | `com.corejbh.pocketcore` |
+| Version | 1.0.0 (versionCode 12) |
+| Release APK | `app-release.apk`, 8,467,759 bytes, SHA-256 `801c769fc654895b04087e95a30b2e6ddfa58e66281c7756f467f11444299ff7` |
+| Debug APK | `app-debug.apk`, 17,078,530 bytes, SHA-256 `af868d7df11c4c39993cb84ce5a1a5f2c89fa2b9a8b074f9f82be5ca628191db` |
+| Signing (release) | `keystore/pocketcore-release.jks`, alias `pocketcore`; v1 (JAR) signature off, v2 on; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` |
+| Daemon in the APK | `lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
+| Daemon hash in the app | `BuildConfig.BITCOIND_SHA256`, computed by Gradle from that file; `BitcoindNode.prepareBinary()` verifies the extracted copy before executing it |
+| Lint | 0 errors, 16 warnings (`abortOnError = true` since this build) |
+| Unit tests | 107 passing in `testDebugUnitTest` |
+
+The release checklist that produced this build was
+`:app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease`,
+all green.
+
+### In-place upgrade APK for the installed app
+
+The app installed from the versionCode 9-11 debug APKs keeps the package
+`com.jbitmstr.pocketcore`, so those installs need a build with that package name:
+
+| Item | Value |
+| --- | --- |
+| Package | `com.jbitmstr.pocketcore` |
+| Version | 1.0.0 (versionCode 13) |
+| Build | `:app:assembleDebug` of the same source in a temporary copy of the tree, with `applicationId` and `versionCode` changed there only - nothing of this build is committed |
+| APK | `pocketcore-update-existing.apk`, 17,078,314 bytes, SHA-256 `77e260ea1bf280f6daeec51b484d7342e7b04cfbe1b65a7591144362bb0d451a` |
+| Signing | the Android debug key, certificate SHA-256 `f5:07:48:15:c3:5c:6b:87:b2:5c:39:32:df:22:83:48:86:8a:cb:b3:18:70:e2:01:18:35:66:ea:2a:a9:c0:11` - the same certificate as versionCode 9-11, so it updates in place and keeps the synced chain |
+| Daemon | identical bytes to the release build above (checked inside the APK) |
+
 ## versionCode 10 — the Google Play build
 
 Built on 2026-11-21 as the first bundle for Google Play, after the Android
