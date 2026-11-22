@@ -1,5 +1,6 @@
 package com.corejbh.pocketcore.core
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -141,6 +142,10 @@ object ExplorerController {
                 _state.update {
                     it.copy(block = null, blockBusy = false, blockError = describeBlockError(error, text))
                 }
+            } catch (error: CancellationException) {
+                // A newer query replaced this one. Cancellation is not an answer
+                // to show, and it must keep propagating.
+                throw error
             } catch (error: Exception) {
                 _state.update {
                     it.copy(block = null, blockBusy = false, blockError = error.message ?: "Block lookup failed.")
@@ -185,6 +190,8 @@ object ExplorerController {
                 }
             } catch (error: RpcException) {
                 _state.update { it.copy(tx = null, txBusy = false, txError = describeTransactionError(error)) }
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 _state.update { it.copy(tx = null, txBusy = false, txError = error.message ?: "Lookup failed.") }
             }
@@ -233,6 +240,8 @@ object ExplorerController {
                         broadcastError = error.message ?: "The node rejected this transaction."
                     )
                 }
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 _state.update {
                     it.copy(

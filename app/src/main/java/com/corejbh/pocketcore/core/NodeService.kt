@@ -134,6 +134,10 @@ class NodeService : Service() {
             .setWhen(state.lastUpdated.takeIf { it > 0L } ?: System.currentTimeMillis())
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            // The card names the node state while the phone is unlocked; on a
+            // locked screen it is collapsed to "Contents hidden" instead of
+            // showing it to anyone holding the phone.
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(mainIntent())
 

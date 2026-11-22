@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -76,6 +77,11 @@ data class NodeUiState(
 object NodeController {
 
     private const val TAG = "PocketCore"
+
+    /** HTTP status Core answers when the credentials are not accepted. */
+    private const val HTTP_UNAUTHORIZED = 401
+    private const val HTTP_FORBIDDEN = 403
+
     private const val STARTUP_GRACE_MS = 120_000L
 
     /** debug.log is read for header progress at most this often. */
@@ -97,7 +103,9 @@ object NodeController {
     val state: StateFlow<NodeUiState> = _state.asStateFlow()
 
     private var pollJob: Job? = null
-    private var rpc: RpcClient? = null
+    // Read from the poll loop, the UI-side actions and the service, so a write
+    // from one coroutine is visible to the next reader without a lock.
+    @Volatile private var rpc: RpcClient? = null
     private var startedAt = 0L
     private var lastPeerRefresh = 0L
     private var lastHeaderLogRead = 0L
@@ -356,26 +364,37 @@ object NodeController {
         launchService()
 
         val ports = resolvePorts(config)
-        // A port left to another app means the old pair may have been seen by
-        // something that is not ours: replace it before this start.
-        val activeConfig = if (ports.rotateCredentials) {
+        // Hold both endpoints from here until the daemon is launched: the check
+        // and the bind are separate steps, and while the configuration is being
+        // written another app must not be able to claim the port that was just
+        // found free. The holds are released right before node.start(), because
+        // bitcoind has to bind the endpoints itself.
+        val rpcHold = PortProbe.reserve(ports.rpc)
+        val p2pHold = if (ports.p2p != ports.rpc) PortProbe.reserve(ports.p2p) else null
+        try {
+            // A fresh credential pair for every start, not only when a port had
+            // to be left to another app: an RPC port is loopback only, but a
+            // password that was ever written by an earlier build is not reused,
+            // and a process that wins the race for the port between the check and
+            // the bind has no password to answer with.
             settings.rotateCredentials()
-            settings.state.value
-        } else {
-            config
-        }
-        NodeConfig.write(appContext, activeConfig, ports.rpc, ports.p2p)
-        rpc = RpcClient(ports.rpc, activeConfig.rpcUser, activeConfig.rpcPassword)
-        startedAt = System.currentTimeMillis()
-        _state.update {
-            it.copy(
-                status = NodeStatus.STARTING,
-                detail = ports.note ?: "Starting bitcoind",
-                config = activeConfig,
-                effectiveRpcPort = ports.rpc,
-                effectiveP2pPort = ports.p2p,
-                portNote = ports.note
-            )
+            val activeConfig = settings.state.value
+            NodeConfig.write(appContext, activeConfig, ports.rpc, ports.p2p)
+            rpc = RpcClient(ports.rpc, activeConfig.rpcUser, activeConfig.rpcPassword)
+            startedAt = System.currentTimeMillis()
+            _state.update {
+                it.copy(
+                    status = NodeStatus.STARTING,
+                    detail = ports.note ?: "Starting bitcoind",
+                    config = activeConfig,
+                    effectiveRpcPort = ports.rpc,
+                    effectiveP2pPort = ports.p2p,
+                    portNote = ports.note
+                )
+            }
+        } finally {
+            rpcHold?.close()
+            p2pHold?.close()
         }
         val error = node.start()
         if (error != null) {
@@ -385,6 +404,9 @@ object NodeController {
         _state.update { it.copy(pid = node.pid()) }
         startPolling()
     }
+
+    /** Suffix of a snapshot still being copied. */
+    private const val PART_SUFFIX = ".part"
 
     private fun fail(message: String) {
         Log.e(TAG, message)
@@ -468,6 +490,12 @@ object NodeController {
                 )
             }
         } catch (error: RpcException) {
+            if (error.code == HTTP_UNAUTHORIZED || error.code == HTTP_FORBIDDEN) {
+                // Something answered on the RPC port and refused this start's
+                // credentials, which exist only in this process.
+                handleForeignAnswer(error.code)
+                return
+            }
             val elapsed = System.currentTimeMillis() - startedAt
             if (error.code == -1 && elapsed < STARTUP_GRACE_MS) {
                 _state.update {
@@ -485,9 +513,50 @@ object NodeController {
                     )
                 }
             }
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Exception) {
             Log.w(TAG, "Polling failed: ${error.message}")
             _state.update { it.copy(rpcReachable = false) }
+        }
+    }
+
+    /**
+     * The RPC port answers, but it refuses the credential pair of this start.
+     *
+     * The pair was generated for this start alone and never left the app, so the
+     * daemon it launched is not the one holding the port: another process took
+     * it after it was verified free. Basic Auth with an unknown password leaks
+     * nothing. The node moves to a verified free port once, and the retry is
+     * limited by [autoRetried] so a port that keeps changing hands ends in a
+     * clear error instead of a start loop.
+     */
+    private fun handleForeignAnswer(code: Int) {
+        pollJob?.cancel()
+        pollJob = null
+        scope.launch {
+            mutex.withLock {
+                val retry = !autoRetried && settings.state.value.shouldRun
+                if (retry) {
+                    autoRetried = true
+                    node.killStrayProcesses()
+                    _state.update {
+                        it.copy(
+                            status = NodeStatus.STARTING,
+                            detail = "Another app is answering on the RPC port. Retrying on a free port.",
+                            rpcReachable = false,
+                            pid = null
+                        )
+                    }
+                    beginStartLocked(settings.state.value)
+                } else {
+                    fail(
+                        "Port ${_state.value.rpcPort} is answering, but not with this node's credentials " +
+                            "(HTTP $code). Another app holds it. Stop the other app or restart the phone, " +
+                            "then press START NODE."
+                    )
+                }
+            }
         }
     }
 
@@ -496,17 +565,22 @@ object NodeController {
      * once on a verified free port; otherwise report the exact Core line.
      */
     private fun handleUnexpectedExit() {
-        val config = settings.state.value
-        val detail = node.describeExit(config.network)
+        // The poll loop that found the daemon gone is retired at once, so no
+        // second pass can enter here again while the restart is being decided.
+        pollJob?.cancel()
+        pollJob = null
+        val detail = node.describeExit(settings.state.value.network)
         val portProblem = detail.contains("Unable to bind", true) ||
             detail.contains("Unable to start HTTP server", true) ||
             detail.contains("already running", true)
-        val retry = !autoRetried && portProblem && settings.state.value.shouldRun
-        if (retry) autoRetried = true
         scope.launch {
             mutex.withLock {
                 if (node.isAlive()) return@withLock
+                // Read and set under the same lock as every other start, so two
+                // exits cannot both decide they are the one retry.
+                val retry = !autoRetried && portProblem && settings.state.value.shouldRun
                 if (retry) {
+                    autoRetried = true
                     node.killStrayProcesses()
                     _state.update {
                         it.copy(
@@ -604,12 +678,27 @@ object NodeController {
             val result = runCatching {
                 val label = displayName?.substringAfterLast('/') ?: "snapshot.dat"
                 val target = NodeConfig.snapshotTarget(appContext, label)
-                val stream = appContext.contentResolver.openInputStream(uri)
-                    ?: throw IllegalStateException("The selected file cannot be read.")
-                stream.use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
+                // The copy lands in a .part file next to the target and is renamed
+                // only once it is complete and plausible: an interrupted or
+                // rejected import leaves no half file behind for the daemon, and
+                // the previous snapshot stays in place.
+                val partial = File(target.absolutePath + PART_SUFFIX)
+                try {
+                    val stream = appContext.contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("The selected file cannot be read.")
+                    stream.use { input ->
+                        partial.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    if (partial.length() < 1024) {
+                        throw IllegalStateException("That file is too small to be a UTXO snapshot.")
+                    }
+                    if (!partial.renameTo(target)) {
+                        throw IllegalStateException("The snapshot could not be moved into place.")
+                    }
+                } catch (error: Throwable) {
+                    runCatching { partial.delete() }
+                    throw error
                 }
-                if (target.length() < 1024) throw IllegalStateException("That file is too small to be a UTXO snapshot.")
                 settings.setSnapshot(target.absolutePath, label)
                 target
             }

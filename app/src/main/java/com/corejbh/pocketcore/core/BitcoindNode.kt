@@ -19,6 +19,11 @@ class BitcoindNode(private val context: Context) {
 
     private var process: Process? = null
 
+    private companion object {
+        /** `bitcoind -version` answers in milliseconds; this is a stuck binary. */
+        const val VERSION_TIMEOUT_SECONDS = 5L
+    }
+
     val binary: File get() = NodePaths.processBinaryPath(context)
 
     fun isAlive(): Boolean = process?.isAlive == true
@@ -27,20 +32,24 @@ class BitcoindNode(private val context: Context) {
         val current = process ?: return null
         if (!current.isAlive) return null
         val myPid = android.os.Process.myPid()
+        val myUid = android.os.Process.myUid()
         val entries = File("/proc").listFiles { file -> file.name.all(Char::isDigit) } ?: return null
         var fallback: Int? = null
         for (entry in entries) {
             val pid = entry.name.toIntOrNull() ?: continue
             if (pid == myPid) continue
+            // Only a process of this app may be described as its node: another
+            // app's daemon with the same binary name is not ours to report or to
+            // touch.
+            val status = runCatching { File(entry, "status").readLines() }.getOrNull() ?: continue
+            if (!ProcScan.runsAs(status, myUid)) continue
             val cmdline = runCatching {
                 File(entry, "cmdline").readBytes().toString(Charsets.UTF_8)
             }.getOrNull() ?: continue
             if (!ProcScan.runsDaemon(cmdline, NodePaths.BINARY_NAME)) continue
             if (fallback == null) fallback = pid
-            val parent = runCatching {
-                File(entry, "status").readLines().firstOrNull { it.startsWith("PPid:") }
-                    ?.filter(Char::isDigit)?.toIntOrNull()
-            }.getOrNull()
+            val parent = status.firstOrNull { it.startsWith("PPid:") }
+                ?.filter(Char::isDigit)?.toIntOrNull()
             if (parent == myPid) return pid
         }
         return fallback
@@ -53,7 +62,9 @@ class BitcoindNode(private val context: Context) {
             return "Bundled bitcoind is missing at ${file.absolutePath}."
         }
         if (!file.canExecute()) {
-            file.setExecutable(true, false)
+            // Owner-only: the executable bit is for this app's UID, not for every
+            // user on the device.
+            file.setExecutable(true, true)
         }
         if (!file.canExecute()) {
             return "Bundled bitcoind is not executable at ${file.absolutePath}."
@@ -181,9 +192,18 @@ class BitcoindNode(private val context: Context) {
                 VersionProbe.environment(builder.environment(), context.filesDir, context.cacheDir)
             )
             val proc = builder.start()
-            val output = proc.inputStream.bufferedReader().use { reader -> reader.readText() }
-            proc.waitFor(5, TimeUnit.SECONDS)
-            VersionProbe.parse(output)
+            // `-version` prints its line and exits. A binary that does not is a
+            // broken one: the wait is bounded and ends it, instead of leaving a
+            // child behind on every version lookup.
+            val finished = runCatching { proc.waitFor(VERSION_TIMEOUT_SECONDS, TimeUnit.SECONDS) }
+                .getOrDefault(true)
+            if (!finished) proc.destroyForcibly()
+            // The pipe is drained after the process ended, so a full pipe buffer
+            // can no longer hold the reader.
+            val output = runCatching {
+                proc.inputStream.bufferedReader().use { reader -> reader.readText() }
+            }.getOrDefault("")
+            if (!finished) null else VersionProbe.parse(output)
         }.getOrNull()
         if (!detected.isNullOrBlank()) {
             runCatching { cached.writeText(detected) }

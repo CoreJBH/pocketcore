@@ -18,17 +18,46 @@ object PortProbe {
 
     private val loopbackV4: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
 
+    /** A loopback socket that holds [port] until it is closed. */
+    class Reservation internal constructor(
+        private val socket: ServerSocket,
+        val port: Int
+    ) : AutoCloseable {
+        /** Gives the port back, so the daemon can bind it. */
+        override fun close() {
+            runCatching { socket.close() }
+        }
+    }
+
+    /**
+     * Claims [port] on 127.0.0.1 and keeps it until the reservation is closed.
+     *
+     * Checking a port and handing it to bitcoind are two separate steps, and the
+     * daemon has to bind the endpoint itself, so a reservation cannot stay open
+     * across the start. It is held while the configuration is written and closed
+     * immediately before the launch, which narrows the window another process
+     * could win from a few file writes to a single process start. The credential
+     * pair is replaced for every start as well, so a port won in that window
+     * never sees a usable password.
+     */
+    fun reserve(port: Int): Reservation? {
+        if (port !in MIN_PORT..MAX_PORT) return null
+        return runCatching {
+            val socket = ServerSocket()
+            socket.reuseAddress = true
+            socket.bind(InetSocketAddress(loopbackV4, port), 1)
+            Reservation(socket, port)
+        }.getOrNull()
+    }
+
     /** True when nothing else on the device holds [port] on 127.0.0.1. */
     fun isFree(port: Int): Boolean {
         if (port !in MIN_PORT..MAX_PORT) return false
-        val bound = runCatching {
-            ServerSocket().use { socket ->
-                socket.reuseAddress = true
-                socket.bind(InetSocketAddress(loopbackV4, port), 1)
-            }
-            true
-        }.getOrDefault(false)
-        if (!bound) return false
+        val reservation = reserve(port) ?: return false
+        // The reservation has to be given back before the server is asked
+        // whether it answers: a bound socket accepts connections even when
+        // nobody accepts them, so the probe would find itself.
+        reservation.close()
         // A listener that accepted nothing still refuses bind(), but a socket
         // that is bound without listening accepts a connection. Treat a
         // successful connect as "in use" as well.

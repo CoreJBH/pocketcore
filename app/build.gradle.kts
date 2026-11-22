@@ -25,6 +25,17 @@ android {
         applicationId = "com.corejbh.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 11: security and stability review. The RPC password is no
+        // longer ever written in the clear - a Keystore that cannot encrypt keeps
+        // it in memory only - and a key invalidated by a lock screen change is
+        // replaced instead of failing every read. The RPC credential pair is
+        // regenerated on every start and both endpoints are held from the free
+        // port check until the daemon is launched, so a loopback port that
+        // changes hands in between never sees a usable password. Coroutine
+        // cancellation is no longer swallowed by the scan, explorer and poll
+        // loops, the process scan matches this app's UID before reporting a PID,
+        // an unresponsive `-version` probe is killed, the foreground notification
+        // is private on the lock screen, and release builds are minified.
         // versionCode 10: first Google Play build. The applicationId moved from
         // com.jbitmstr.pocketcore to com.corejbh.pocketcore and the build is now
         // signed with a release keystore instead of the debug key, so it installs
@@ -63,7 +74,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 10
+        versionCode = 11
         versionName = "1.0.0"
 
         ndk {
@@ -93,7 +104,10 @@ android {
             if (hasReleaseKeystore) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            isMinifyEnabled = false
+            // Shrinking and obfuscation for the build that is published: the
+            // app uses no reflection, so no class or member has to be kept by
+            // name (see proguard-rules.pro).
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -139,7 +153,9 @@ android {
 
     lint {
         abortOnError = false
-        checkReleaseBuilds = false
+        // Lint runs as part of a release build too, so a release that is about to
+        // be published cannot carry a fresh set of errors silently.
+        checkReleaseBuilds = true
     }
 
     testOptions {

@@ -1,0 +1,10 @@
+versionCode 11 - 1.0.0
+
+- The RPC password is never stored in the clear: if the device Keystore
+  cannot encrypt it, it is kept in memory for that session only.
+- A new RPC password is generated on every start, and the RPC and P2P ports
+  are held until the node is launched.
+- Cancelled scans and lookups stop cleanly instead of reporting a failure.
+- A version check that does not return is stopped instead of left running.
+- The node notification shows no contents on the lock screen.
+- Smaller download: release builds are minified.

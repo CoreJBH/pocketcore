@@ -1,5 +1,6 @@
 package com.corejbh.pocketcore.core
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -116,6 +117,11 @@ object DescriptorScanController {
             } catch (error: RpcException) {
                 pollJob?.cancel()
                 _state.update { it.copy(busy = false, error = describeScanError(error)) }
+            } catch (error: CancellationException) {
+                // The scan was cancelled (a new scan, or ABORT). That is not a
+                // failure to report, and swallowing it would break the
+                // cancellation contract of the coroutine that runs it.
+                throw error
             } catch (error: Exception) {
                 pollJob?.cancel()
                 _state.update { it.copy(busy = false, error = error.message ?: "Scan failed.") }

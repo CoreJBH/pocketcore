@@ -2,6 +2,7 @@ package com.corejbh.pocketcore.core
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetAddress
@@ -51,5 +52,23 @@ class PortProbeTest {
     fun refusesReservedRange() {
         assertFalse(PortProbe.isFree(80))
         assertFalse(PortProbe.isFree(0))
+    }
+
+    /**
+     * The hold that keeps a verified port from being taken while the node starts.
+     * It has to block a second claim while it is open and give the port back when
+     * it is closed - a leaked reservation would keep the daemon from ever binding.
+     */
+    @Test
+    fun aReservationHoldsThePortUntilItIsClosed() {
+        val base = 46_000 + (System.nanoTime() % 400).toInt()
+        val reservation = PortProbe.reserve(base) ?: return
+        try {
+            assertFalse("a held port must not look free", PortProbe.isFree(base))
+            assertNull("the same port must not be reservable twice", PortProbe.reserve(base))
+        } finally {
+            reservation.close()
+        }
+        assertTrue("the port must be free again after the hold is released", PortProbe.isFree(base))
     }
 }
