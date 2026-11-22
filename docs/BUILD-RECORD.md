@@ -4,7 +4,7 @@ Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode
 
 ## versionCode 21 — the completeness review
 
-Built on 2026-11-23 from `main` at `078820b`. Five findings plus two documents:
+Built on 2026-11-23 from `main` at `5ff0442`. Five findings plus two documents:
 the daemon is unchanged, byte for byte. This is the first build whose published
 artifact is **only** the release-signed `com.corejbh.pocketcore`; no debug-key
 APK is produced or distributed, and the `com.jbitmstr.pocketcore` upgrade line
