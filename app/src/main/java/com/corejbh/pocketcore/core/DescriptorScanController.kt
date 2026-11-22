@@ -119,13 +119,19 @@ object DescriptorScanController {
             return
         }
         val valid = parsed as Descriptors.Parsed.Valid
-        val client = NodeController.client()
-        if (client == null) {
+        // `scantxoutset` walks the chainstate for as long as it takes, and it is one
+        // of the requests the sensitive gate covers: the node has to be running, its
+        // listener proved again now, the user still asking for it to run and no start
+        // or stop since this decision (versionCode 21).
+        val open = NodeController.openSensitiveRpc()
+        val call = open.call
+        if (call == null) {
             _state.update {
-                it.copy(error = "Start the node before scanning. The scan runs on this phone's own UTXO set.")
+                it.copy(error = open.refusal ?: "The node is not ready for a scan.")
             }
             return
         }
+        val client = call.client
         scanJob?.cancel()
         pollJob?.cancel()
         scanJob = scope.launch {
@@ -155,6 +161,19 @@ object DescriptorScanController {
                 // is not interruptible, and the answer would otherwise land on
                 // top of the state ABORT already published (versionCode 20).
                 val json = answerIfStillWanted { client.scanTxOutSet(info.descriptor, info.isRange) }
+                val problem = NodeController.sensitiveReplyProblem(call)
+                if (problem != null) {
+                    pollJob?.cancel()
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            progress = 0.0,
+                            error = "The scan finished, but the node changed while it ran: $problem " +
+                                "Start the node and scan again."
+                        )
+                    }
+                    return@launch
+                }
                 val result = ScanResult.from(json)
                 pollJob?.cancel()
                 _state.update {

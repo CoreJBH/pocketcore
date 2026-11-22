@@ -79,6 +79,23 @@ object NodePaths {
             .sumOf { it.directorySize() }
     }
 
+    /**
+     * Bytes the selected network's chainstate occupies on disk.
+     *
+     * This is the number a snapshot load has to plan around: `loadtxoutset`
+     * writes a second chainstate (`chainstate_snapshot/`) and keeps this one
+     * until background validation catches up, so the phone has to hold both at
+     * once (see [StorageBudget.requiredLoadBytes]). The directory is absent on a
+     * node that has never synced, which is reported as 0.
+     */
+    fun chainstateBytes(context: Context, network: BitcoinNetwork): Long {
+        val dir = File(networkDataDir(context, network), CHAINSTATE_DIR)
+        return if (dir.isDirectory) dir.directorySize() else 0L
+    }
+
+    /** Core's own chainstate directory name inside a network's data directory. */
+    private const val CHAINSTATE_DIR = "chainstate"
+
     /** Subdirectories of the data directory that belong to another network. */
     private val OTHER_NETWORK_SUBDIRS: Set<String> =
         BitcoinNetwork.entries.map { it.dataSubdir }.filter { it.isNotEmpty() }.toSet()

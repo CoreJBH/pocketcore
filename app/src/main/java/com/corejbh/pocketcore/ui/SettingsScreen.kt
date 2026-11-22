@@ -149,13 +149,13 @@ fun SettingsScreen(
             if (config.pruneMb == 0) {
                 Muted(
                     "Full keeps every block, so the whole chain has to fit on the phone: about " +
-                        "750-800 GB on mainnet, and it has to stay free while the chain is verified."
+                        "890-900 GB on mainnet, and it has to stay free while the chain is verified."
                 )
                 if (config.network == BitcoinNetwork.MAINNET && freeBytes >= 0 && freeBytes < FULL_CHAIN_BYTES) {
                     SpacerH(8)
                     NoteBanner(
                         "This phone has ${formatBytes(freeBytes)} free and a full mainnet chain needs " +
-                            "about 800 GB. Pick a pruned size unless that storage is really there.",
+                            "about 900 GB. Pick a pruned size unless that storage is really there.",
                         PocketColors.Warning
                     )
                 }
@@ -314,7 +314,7 @@ fun SettingsScreen(
                     "This chain was built with pruning, and Bitcoin Core will not re-open it as a " +
                         "full node. Choosing Full deletes the chain data of ${config.network.label} - " +
                         "the other networks' chains keep theirs - and downloads the whole chain " +
-                        "again: about 750-800 GB and a long download."
+                        "again: about 890-900 GB and a long download."
                 )
             },
             confirmButton = {
@@ -622,4 +622,4 @@ private fun DebugLogDialog(onDismiss: () -> Unit) {
 }
 
 /** Rough size of the full mainnet chain, used for the Full storage warning. */
-private const val FULL_CHAIN_BYTES = 800L * 1024L * 1024L * 1024L
+private const val FULL_CHAIN_BYTES = 890L * 1024L * 1024L * 1024L

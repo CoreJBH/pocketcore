@@ -56,9 +56,9 @@ data class NodeSettingsState(
  * Small persisted settings store. Values are read once and then kept in a
  * StateFlow so the UI and the foreground service always agree.
  *
- * The secrets - the RPC password and the watch-only descriptor - are kept in
- * [SecretStore] (AES-256-GCM under a Keystore key), migrated from the plaintext
- * SharedPreferences values of earlier builds.
+ * The secrets - the RPC user and password pair and the watch-only descriptor -
+ * are kept in [SecretStore] (AES-256-GCM under a Keystore key), migrated from the
+ * plaintext SharedPreferences values of earlier builds.
  *
  * **Reading is not the constructor's job.** The constructor touches nothing: the
  * state starts at the defaults and [load] fills it in. Reading this store on a
@@ -120,9 +120,7 @@ class NodeSettings(context: Context) {
      * reads a preference file and, for the secrets, the Keystore.
      */
     private fun read(): NodeSettingsState {
-        val user = prefs.getString(KEY_RPC_USER, null) ?: generateToken(16).also {
-            prefs.edit().putString(KEY_RPC_USER, it).commit()
-        }
+        val user = readRpcUser()
         return NodeSettingsState(
             network = BitcoinNetwork.fromName(prefs.getString(KEY_NETWORK, null)),
             pruneMb = prefs.getInt(KEY_PRUNE, 550),
@@ -137,6 +135,30 @@ class NodeSettings(context: Context) {
             descriptorInput = secrets.read(KEY_DESCRIPTOR_INPUT) ?: "",
             descriptorNormalized = secrets.read(KEY_DESCRIPTOR_NORMALIZED)
         )
+    }
+
+    /**
+     * The RPC user, sealed by [SecretStore] like the password.
+     *
+     * The user half of a Basic Auth pair is not a secret on its own, but stored
+     * in the clear it names the credential the password belongs to and sits in a
+     * preference file any component the app's preferences are shared with can
+     * read; the pair is therefore kept the same way (versionCode 21). A value
+     * written in the clear by a build before this one is read once and
+     * re-encrypted in place by [SecretStore.read], so the stored node settings of
+     * an upgraded app keep working - the daemon is started with the same pair it
+     * was started with before.
+     *
+     * A user is generated only when nothing is stored at all. An entry that
+     * exists but cannot be opened right now (a Keystore that did not answer) is
+     * not replaced: a start that rotated the pair would write the new one before
+     * the conf the daemon reads, and the empty answer until then is a value no
+     * request carries (the same rule as [readPassword]).
+     */
+    private fun readRpcUser(): String {
+        secrets.read(KEY_RPC_USER)?.let { return it }
+        if (!secretMissing(prefs.contains(KEY_RPC_USER_ENCRYPTED), prefs.contains(KEY_RPC_USER))) return ""
+        return generateToken(16).also { secrets.write(KEY_RPC_USER, it) }
     }
 
     /**
@@ -156,7 +178,7 @@ class NodeSettings(context: Context) {
         secrets.read(KEY_RPC_PASSWORD)?.let { return it }
         // A value from a build before versionCode 9 is plaintext, and its entry
         // is not the encrypted one: only a store with neither has no password.
-        if (prefs.contains(KEY_RPC_PASSWORD_ENCRYPTED) || prefs.contains(KEY_RPC_PASSWORD)) return ""
+        if (!secretMissing(prefs.contains(KEY_RPC_PASSWORD_ENCRYPTED), prefs.contains(KEY_RPC_PASSWORD))) return ""
         return generateToken(32).also { secrets.write(KEY_RPC_PASSWORD, it) }
     }
 
@@ -207,7 +229,8 @@ class NodeSettings(context: Context) {
     /** A new credential pair, used when an RPC port had to be left to another app. */
     suspend fun rotateCredentials() = writeLock.withLock {
         withContext(Dispatchers.IO) {
-            prefs.edit().putString(KEY_RPC_USER, generateToken(16)).commit()
+            // Both halves go through the same sealed store (versionCode 21).
+            secrets.write(KEY_RPC_USER, generateToken(16))
             secrets.write(KEY_RPC_PASSWORD, generateToken(32))
             _state.value = read()
         }
@@ -232,6 +255,9 @@ class NodeSettings(context: Context) {
         private const val KEY_CHARGING_ONLY = "charging_only"
         private const val KEY_TOR_PROXY = "tor_proxy"
         private const val KEY_RPC_USER = "rpc_user"
+
+        /** The name [SecretStore] writes the encrypted user under. */
+        private const val KEY_RPC_USER_ENCRYPTED = "rpc_user_enc"
         private const val KEY_RPC_PASSWORD = "rpc_password"
 
         /** The name [SecretStore] writes the encrypted password under. */

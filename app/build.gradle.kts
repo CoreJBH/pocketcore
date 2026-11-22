@@ -94,6 +94,24 @@ android {
         applicationId = "com.corejbh.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 21: completeness review. The RPC user is sealed in the
+        // Keystore store like the password (a plaintext value from an earlier
+        // build is migrated on first read, so the stored node settings keep
+        // working). The three chainstate requests - loadtxoutset, dumptxoutset
+        // and scantxoutset - no longer trust the one-time listener proof: the
+        // status, the listener, the daemon process, the user's intent, the
+        // lifecycle generation and the port's current owner are read before the
+        // request, and read again after it, so a result that arrives after a
+        // stop or a restart is reported as lost instead of written back as this
+        // node's state. An imported or loaded snapshot must carry Bitcoin Core's
+        // own header (magic `utxo` 0xFF, format version 2, the selected
+        // network's magic, a base block hash and a coin count) before a byte is
+        // copied or the daemon is asked, and the space a load needs is the
+        // chainstate it writes beside the existing one, not the file that is
+        // already on disk. The README and the new docs/mobile-architecture.md
+        // drop the debug-key install path and the 1 GB storage figure, and write
+        // down what a phone node really costs (listen=1 on mobile NAT, the
+        // repeated scantxoutset walks, the unbounded partial wake lock).
         // versionCode 20: tenth security and state review. Ten findings, all in
         // the app: the daemon is unchanged. ABORT now cancels the scan job before
         // it asks the daemon to abort and checks the job after the scan returns,
@@ -271,7 +289,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 20
+        versionCode = 21
         versionName = "1.0.0"
 
         // The hash of the bundled daemon, embedded for the integrity check in

@@ -65,6 +65,48 @@ class StorageBudgetTest {
     }
 
     @Test
+    fun activatingASnapshotNeedsRoomForTheSecondChainstate() {
+        // The file is already on disk when LOAD is pressed, so its size is not
+        // what the load writes: Core writes a second chainstate beside the one
+        // that is already there and keeps both until validation catches up
+        // (versionCode 21).
+        val snapshot = 9 * gib
+        val chainstate = 13 * gib
+        assertEquals(13 * gib + StorageBudget.RESERVE_BYTES, StorageBudget.requiredLoadBytes(snapshot, chainstate))
+        // A phone whose chainstate is smaller than the file is estimated from the
+        // file, because the new chainstate holds the same coins.
+        assertEquals(9 * gib + StorageBudget.RESERVE_BYTES, StorageBudget.requiredLoadBytes(snapshot, 4 * gib))
+        // An unknown figure is not a reason to under-count the known one.
+        assertEquals(9 * gib + StorageBudget.RESERVE_BYTES, StorageBudget.requiredLoadBytes(snapshot, -1L))
+        assertEquals(13 * gib + StorageBudget.RESERVE_BYTES, StorageBudget.requiredLoadBytes(-1L, chainstate))
+        assertEquals(0L, StorageBudget.requiredLoadBytes(-1L, -1L))
+    }
+
+    @Test
+    fun theLoadRefusesWhenOnlyTheSecondChainstateWouldFit() {
+        val snapshot = 9 * gib
+        val chainstate = 13 * gib
+        // Free space that would have satisfied the old rule (the file's size plus
+        // the reserve) is no longer enough.
+        assertFalse(StorageBudget.fitsLoad(9 * gib + StorageBudget.RESERVE_BYTES, snapshot, chainstate))
+        assertTrue(StorageBudget.fitsLoad(13 * gib + StorageBudget.RESERVE_BYTES, snapshot, chainstate))
+        // Unknown free space still never blocks, and neither does an unknown pair.
+        assertTrue(StorageBudget.fitsLoad(-1L, snapshot, chainstate))
+        assertTrue(StorageBudget.fitsLoad(1 * gib, -1L, -1L))
+    }
+
+    @Test
+    fun theLoadMessageNamesBothChainstates() {
+        val message = StorageBudget.loadShortageMessage(9 * gib, 13 * gib, 5 * gib)
+        assertTrue(message.startsWith("Not enough free space to activate this snapshot:"))
+        assertTrue(message.contains("second chainstate of about 13.0 GB"))
+        assertTrue(message.contains("13.0 GB chainstate already on the phone"))
+        assertTrue(message.contains("needs 13.1 GB free"))
+        assertTrue(message.contains("the phone has 5.0 GB"))
+        assertTrue(message.contains("Free up 8.1 GB and try again."))
+    }
+
+    @Test
     fun bytesAreShownInTheUnitsTheRestOfTheAppUses() {
         assertEquals("0 B", StorageBudget.humanBytes(0L))
         assertEquals("512 B", StorageBudget.humanBytes(512L))

@@ -21,12 +21,20 @@ execution and every ECDSA/Schnorr signature check run inside the unmodified
 Bitcoin Core source, built for `aarch64-linux-android`, on the device in your
 hand.
 
-**Download.** Grab `pocketcore.apk` from
+**Download.** Grab `pocketcore-1.0.0-release-v21.apk` from
 [Releases](https://github.com/CoreJBH/pocketcore/releases/latest) and install it
-(allow "install unknown apps" for the app you open it with). Every build shares
-one debug signing key, so a newer APK installs straight over the installed one —
-update in place rather than uninstalling, because removing the app deletes its
+(allow "install unknown apps" for the app you open it with). It is the
+release-signed build, `com.corejbh.pocketcore` - the same app ID and the same
+release key as the Google Play build, so the two update each other in place.
+Update in place rather than uninstalling, because removing the app deletes its
 node data (headers, blocks, settings) with it.
+
+**Coming from the older debug builds.** The builds up to versionCode 21 were
+debug-signed as `com.jbitmstr.pocketcore`; that package is no longer distributed,
+and neither app can install over the other. The synced chain is not lost: in the
+old app press **SYNC -> EXPORT SNAPSHOT** (it dumps at the newest official
+checkpoint, 965,000 on mainnet), copy the `.dat` somewhere safe, uninstall the
+old app, install this one and press **LOAD SNAPSHOT**.
 
 ---
 
@@ -141,8 +149,9 @@ Every figure on these screens is an RPC answer from the phone's own node.
   peer list and one node card - nothing that asks the user to handle a
   credential.
 - **Pruned or full mobile storage.** Default `prune=550`, switchable to 2048 MB,
-  5120 MB or `Full` (`prune=0`, every block kept: about 750-800 GB on mainnet). A
-  pruned node still validates every block.
+  5120 MB or `Full` (`prune=0`, every block kept: about 890-900 GB on mainnet).
+  The prune target is the block set only - the chainstate is on top of it, about
+  12-13 GB on mainnet today. A pruned node still validates every block.
 - **AssumeUTXO, both ways.** Load a `dumptxoutset` `.dat` file to jump to a recent
   height in minutes; background validation continues from genesis, and both
   chainstates are shown with their own progress. **EXPORT SNAPSHOT** does the
@@ -215,10 +224,14 @@ Core's own code, compiled for this phone.
 app/src/main/java/com/corejbh/pocketcore/
   MainActivity.kt              Compose host, notification permission
   core/
+    SnapshotModels.kt          dumptxoutset reply and its parameters
+    SnapshotHeader.kt          Core's UTXO snapshot header, checked before a copy or a load
+    SensitiveRpc.kt            the re-check loadtxoutset/dumptxoutset/scantxoutset run under
+    StorageBudget.kt           free-space checks for a snapshot copy and a load
     NodePaths.kt               datadir, conf, logs, snapshot directory
     NodeConfig.kt              bitcoin.conf generation (rpcauth, prune, ports)
     NodeSettings.kt            persisted settings + generated RPC credentials
-    SecretStore.kt             Keystore-sealed storage for the RPC password
+    SecretStore.kt             Keystore-sealed storage for the RPC pair and descriptor
     RpcAuth.kt                 rpcauth salt + HMAC-SHA256 for bitcoin.conf
     ProcScan.kt                /proc reads: UID and argv of our own processes
     PortResolver.kt            which port a start gets and who may be asked to stop
@@ -250,36 +263,52 @@ verify-english.py              fails if any non-English text enters the repo
 ## Requirements
 
 - Android 8.0 (API 26) or newer, `arm64-v8a` device
-- About 1 GB free storage for the default pruned chain plus the app
+- **About 14 GB free storage** for the default pruned mainnet node: the prune
+  target (550 MB of blocks) plus the chainstate, which is the UTXO set in Core's
+  own database - about 12-13 GB at block 935,000 (`gettxoutsetinfo.disk_size`
+  13.29 GB). `Full` (`prune=0`) needs about 890-900 GB. Loading an AssumeUTXO
+  snapshot needs room for a **second** chainstate beside the first (~13 GB
+  free at that moment). The measurements and their sources are in
+  [docs/mobile-architecture.md](docs/mobile-architecture.md).
 - A Wi-Fi connection for the initial sync (mobile data is allowed unless
   "Wi-Fi only" is on)
 
 ## Install
 
-1. Download `pocketcore.apk` from
+1. Download `pocketcore-1.0.0-release-v21.apk` from
    [Releases](https://github.com/CoreJBH/pocketcore/releases/latest) and copy it
-   to the phone, or build it yourself with `./gradlew :app:assembleDebug`.
+   to the phone, or build it yourself with `./gradlew :app:assembleRelease`
+   (which needs `keystore/keystore.properties`, see below).
 2. Allow "install unknown apps" for the app you open it with, then install.
 3. Open PocketCore and press **START NODE**. The foreground notification shows
    the current height while the node syncs.
 
-All builds are signed with the same debug key (certificate SHA-256
-`f5074815...2aa9c011`, unchanged since versionCode 2), so a newer APK installs
-over the installed one as an update and keeps the synced chain. Do not uninstall
-to upgrade: that deletes `<app files>/node/data`, and the chain has to be
-validated again from the start. A build from another key would only install
-after an uninstall, and none has been published.
+**One signature for every release.** Every published build is signed with the
+release key (`keystore/pocketcore-release.jks`, alias `pocketcore`, certificate
+SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A`)
+as `com.corejbh.pocketcore`. The GitHub release APK and the Google Play bundle
+are the same app, signed the same way, so one updates the other - and no APK is
+published with the Android debug key any more. A release build that cannot be
+signed fails instead of being written unsigned; the debug key is used by
+`assembleDebug` only, for local testing, and nothing built that way is
+distributed.
 
-The release APK is 8,495,651 bytes with SHA-256
-`0aca771cd05f2cf6ea9582e9ef1b627e60015c3eab20e90c926eec549c0bda8a`; the full
+Releases are built from
+[docs/ci/build-release.yml](docs/ci/build-release.yml): it runs the unit tests
+and both lint variants, then `:app:assembleRelease` and `:app:bundleRelease`
+with the keystore from repository secrets, checks that the APK is
+`com.corejbh.pocketcore` and not debug-signed, and attaches the signed APK and
+the `.aab` to the release. Its actions are pinned to commit SHAs, so a moving tag
+cannot change what runs. GitHub only lets a token with the `workflows` scope
+add a file under `.github/workflows/`, so the repository keeps it in `docs/ci/`
+and the owner installs it there once.
+
+The current release APK is `pocketcore-1.0.0-release-v21.apk`, 8,499,175 bytes
+with SHA-256
+`f077100aaf7103cba6bad1e2a79c352419525485ba17be1d46c0b95f91fac54d`; the full
 build record, including the bundled daemon's own hash, is in
-[docs/BUILD-RECORD.md](docs/BUILD-RECORD.md).
-
-**The Google Play build has its own identity.** The version submitted to Play is
-`com.corejbh.pocketcore` (versionCode 10), signed with the release key rather than
-the debug key, so it installs as a separate app from the debug APKs above — the
-two can sit side by side, and the Play build starts with an empty node directory.
-The debug APK line in Releases is unchanged and still updates in place.
+[docs/BUILD-RECORD.md](docs/BUILD-RECORD.md) and can be reproduced from the
+source with `./gradlew :app:assembleRelease`.
 
 ## Configuration the app writes
 
@@ -402,10 +431,13 @@ made it and nowhere else.
    (mainnet; use the checkpoint height for that network).
 2. Copy the `.dat` file to the phone.
 3. In PocketCore open **SYNC**, choose the file, then press **LOAD SNAPSHOT**
-   while the node is running (the app calls `loadtxoutset`). A snapshot is a few
-   gigabytes and loading it makes Core write a chainstate of that size, so the
-   app checks the free space first and says how much has to be freed instead of
-   filling the phone half way through.
+   while the node is running (the app calls `loadtxoutset`). A mainnet snapshot
+   is 8.8 GiB, and loading it makes Core write a whole second chainstate beside
+   the existing one (~13 GB on mainnet), so the app checks the free space for
+   **that** before the call and says how much has to be freed instead of
+   filling the phone half way through. The file's own header is checked first
+   (magic `utxo` 0xFF, format version 2, the selected network's magic), so a
+   wrong file is refused in the card rather than inside the daemon.
 4. The sync screen then shows a snapshot chainstate and the background
    validation chainstate side by side until the snapshot has been fully
    validated.
@@ -491,10 +523,16 @@ Only bionic base libraries are needed: `libm.so`, `libdl.so`, `libc.so`.
 ## Build the app
 
 ```bash
-./gradlew :app:assembleDebug          # -> app/build/outputs/apk/debug/app-debug.apk
+# A release build needs the keystore (see "One signature for every release")
+./gradlew :app:assembleRelease        # -> app/build/outputs/apk/release/app-release.apk
+./gradlew :app:bundleRelease          # -> app/build/outputs/bundle/release/app-release.aab
 ./gradlew :app:testDebugUnitTest      # parser and formatting tests
+./gradlew :app:lintDebug :app:lintRelease
 python3 verify-english.py             # fails if any non-English text sneaks in
 ```
+
+`assembleDebug` still exists and is only for local testing: nothing built with
+the debug key is published.
 
 The measured build is written down in [docs/BUILD-RECORD.md](docs/BUILD-RECORD.md).
 
@@ -506,10 +544,21 @@ its own binary.
 ## Notes and limits
 
 - arm64 only: the APK contains one ABI on purpose, since it embeds a full daemon.
-- The node runs in a foreground service with a partial wake lock; a phone that is
-  plugged in and on Wi-Fi is the intended sync setup.
+- **The wake lock is held while the node runs, and that is a design choice with a
+  cost.** The foreground service takes an unbounded `PARTIAL_WAKE_LOCK` in
+  STARTING and RUNNING, so validation continues with the screen off; a synced
+  node that is only waiting for the next block keeps paying for it. A bounded
+  lock renewed by progress, a slow poll while caught up and a Doze-friendly
+  wake-up are written down, with the code they would touch, in
+  [docs/mobile-architecture.md](docs/mobile-architecture.md).
 - Mobile networks rarely accept inbound connections, so the node usually runs
-  with 8 outbound peers and no inbound ones.
+  with 8 outbound peers and no inbound ones. The app still writes `listen=1` by
+  default, which a carrier NAT almost never makes useful; `listen=0` by default
+  (or a switch for the forwarded-port case) is proposed in the same document.
+- The watch-only scan is a full walk of the UTXO set (`scantxoutset`, 164 million
+  outputs on mainnet today, minutes of CPU), started only by the SCAN button.
+  Remembering the last scan, rescanning only after the chain moved, and BIP158
+  block filters for incremental scans are the alternatives weighed there.
 - STOP stays stopped: every start and every stop takes a new lifecycle number,
   and a status reply that was already on its way when the button was pressed is
   dropped instead of being written back over the new state.
@@ -530,8 +579,9 @@ its own binary.
   SHA-256 matches the published `SHA256SUMS`; the binary is stripped with
   `llvm-strip`, and its hash is recorded in
   [docs/BUILD-RECORD.md](docs/BUILD-RECORD.md) so it can be reproduced and
-  compared. The APK in Releases is debug-signed and is not reproducible
-  byte-for-byte: rebuild it yourself if you need a binary you fully trust.
+  compared. The APK in Releases is release-signed but not reproducible
+  byte-for-byte (a build timestamp and the signing block differ): rebuild it
+  yourself if you need a binary you fully trust.
 - This is a full node, not a wallet: no key material is stored, generated or
   accepted by the app, and the daemon is compiled with `ENABLE_WALLET=OFF`.
 

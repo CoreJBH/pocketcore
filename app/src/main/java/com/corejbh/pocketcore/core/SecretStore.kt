@@ -34,10 +34,24 @@ internal fun keyIsUnusable(error: Throwable?): Boolean = when (error) {
 }
 
 /**
+ * True only when a secret has to be generated: nothing is stored under either the
+ * encrypted name or the plaintext key of an earlier build.
+ *
+ * The decision is separated from the Keystore because it used to sit in two
+ * different guards: a value that exists but cannot be opened right now (a
+ * Keystore that did not answer) is stored, and generating a fresh one would write
+ * it over the ciphertext that the next read was going to decrypt. Only a store
+ * with neither a ciphertext nor a plaintext value is empty.
+ */
+internal fun secretMissing(encryptedPresent: Boolean, plaintextPresent: Boolean): Boolean =
+    !encryptedPresent && !plaintextPresent
+
+/**
  * Encrypts the few secrets the app keeps in its preferences with a key that
  * never leaves the Android Keystore.
  *
- * The RPC password and the watch-only descriptor are the secrets stored here.
+ * The RPC user and password and the watch-only descriptor are the secrets stored
+ * here.
  * Each is written as `v1:<iv>:<ciphertext>` (AES-256-GCM, a fresh IV per write)
  * under `<key>_enc`, and the plaintext key is removed. A value found under the
  * old plaintext key - the format every build before versionCode 9 (the password)

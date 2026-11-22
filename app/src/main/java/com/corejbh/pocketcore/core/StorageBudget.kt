@@ -31,9 +31,54 @@ internal object StorageBudget {
     /** Bytes that have to be free to hold [sourceBytes] and keep the reserve. */
     fun requiredBytes(sourceBytes: Long): Long {
         if (sourceBytes <= 0L) return 0L
-        return if (sourceBytes > Long.MAX_VALUE - RESERVE_BYTES) Long.MAX_VALUE
-        else sourceBytes + RESERVE_BYTES
+        return withReserve(sourceBytes)
     }
+
+    /**
+     * Bytes that have to be free to activate a snapshot with `loadtxoutset`.
+     *
+     * The older rule asked for the snapshot file's size plus the reserve, which
+     * is the wrong quantity on two counts (versionCode 21):
+     *
+     *  - the file is **already on disk** when LOAD is pressed, so its bytes are
+     *    not what the load still has to write;
+     *  - the load writes a whole second chainstate (`chainstate_snapshot/`) and
+     *    keeps the existing one beside it until background validation catches
+     *    up, so the volume has to hold **both** at once.
+     *
+     * The new chainstate holds the same coins as the file, so the snapshot's
+     * size is the floor of the estimate, and the chainstate already on this
+     * phone is a measured second estimate of the same set in Core's leveldb
+     * layout (at block 935,000 on mainnet the published 8.7 GiB snapshot loads
+     * into a chainstate whose `disk_size` is 13.29 GB). The larger of the two is
+     * taken, and the reserve still has to stay free for the daemon's own writes.
+     *
+     * Either figure may be unknown (-1, a provider that does not report a size
+     * or a phone with no chainstate yet); the known one is then used alone.
+     */
+    fun requiredLoadBytes(snapshotBytes: Long, existingChainstateBytes: Long): Long {
+        val estimate = maxOf(snapshotBytes, existingChainstateBytes)
+        if (estimate <= 0L) return 0L
+        return withReserve(estimate)
+    }
+
+    /**
+     * True when [availableBytes] can hold the chainstate a load writes beside
+     * the one already there ([requiredLoadBytes]).
+     */
+    fun fitsLoad(
+        availableBytes: Long,
+        snapshotBytes: Long,
+        existingChainstateBytes: Long = -1L
+    ): Boolean {
+        if (availableBytes < 0L) return true
+        val need = requiredLoadBytes(snapshotBytes, existingChainstateBytes)
+        if (need == 0L) return true
+        return availableBytes >= need
+    }
+
+    private fun withReserve(bytes: Long): Long =
+        if (bytes > Long.MAX_VALUE - RESERVE_BYTES) Long.MAX_VALUE else bytes + RESERVE_BYTES
 
     /**
      * True when [availableBytes] can hold [sourceBytes].
@@ -58,6 +103,33 @@ internal object StorageBudget {
         return "Not enough free space to $action this snapshot: it needs ${humanBytes(need)} " +
             "and the phone has ${humanBytes(availableBytes)} free. Free up ${humanBytes(shortage)} " +
             "and try again."
+    }
+
+    /**
+     * The sentence the card shows when a snapshot cannot be activated: the second
+     * chainstate, the one already on disk, and what to free.
+     *
+     * The load message is separate from [shortageMessage] because the numbers are
+     * different facts: the import is short of room for a copy, the load is short
+     * of room for the chainstate that copy is replayed into, beside the existing
+     * one (versionCode 21).
+     */
+    fun loadShortageMessage(
+        snapshotBytes: Long,
+        existingChainstateBytes: Long,
+        availableBytes: Long
+    ): String {
+        val estimate = maxOf(snapshotBytes, existingChainstateBytes).coerceAtLeast(0L)
+        val need = requiredLoadBytes(snapshotBytes, existingChainstateBytes)
+        val shortage = (need - availableBytes).coerceAtLeast(0L)
+        val beside = if (existingChainstateBytes > 0L) {
+            "beside the ${humanBytes(existingChainstateBytes)} chainstate already on the phone"
+        } else {
+            "beside the chainstate already on the phone"
+        }
+        return "Not enough free space to activate this snapshot: Core writes a second chainstate of " +
+            "about ${humanBytes(estimate)} $beside, so it needs ${humanBytes(need)} free and the " +
+            "phone has ${humanBytes(availableBytes)}. Free up ${humanBytes(shortage)} and try again."
     }
 
     /** Bytes in the units the rest of the app shows storage in. */

@@ -1,0 +1,138 @@
+# build-release - PocketCore's release pipeline
+#
+# This file is kept in docs/ci/ because a GitHub App token without the
+# `workflows` scope cannot push into .github/workflows/. To activate it, copy it
+# unchanged to .github/workflows/build-release.yml from the repository owner's
+# account (the web editor or a personal token with `workflows`).
+#
+# Every artifact this workflow publishes is a release-signed build of
+# com.corejbh.pocketcore - the same app ID and the same key Google Play gets.
+#
+# There is no debug-key path here on purpose: the Android debug key is for a
+# local `assembleDebug` only, and an APK signed with it cannot update the Play
+# build (and is not what a user should install). A build that cannot be signed
+# fails inside Gradle (see the check at the top of app/build.gradle.kts) instead
+# of being uploaded unsigned.
+#
+# Required repository secrets:
+#   POCKETCORE_KEYSTORE_BASE64    base64 of keystore/pocketcore-release.jks
+#   POCKETCORE_KEYSTORE_PASSWORD  store password
+#   POCKETCORE_KEY_ALIAS          key alias (pocketcore)
+#   POCKETCORE_KEY_PASSWORD       key password
+#
+# Every action is pinned to a commit SHA: a moved tag cannot change what runs in
+# this workflow. The comments name the tag each SHA was taken from.
+
+name: build-release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Unit tests, lint and signed release build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: JDK 17
+        uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b # v4.6.0
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Restore the release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.POCKETCORE_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64}" ]; then
+            echo "::error::POCKETCORE_KEYSTORE_BASE64 is not set; a release build cannot be signed."
+            exit 1
+          fi
+          mkdir -p keystore
+          printf '%s' "${KEYSTORE_BASE64}" | base64 -d > keystore/pocketcore-release.jks
+          chmod 600 keystore/pocketcore-release.jks
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Lint (debug and release, 0 errors)
+        run: ./gradlew :app:lintDebug :app:lintRelease --no-daemon
+
+      - name: Assemble the signed release APK and bundle
+        env:
+          POCKETCORE_KEYSTORE_FILE: keystore/pocketcore-release.jks
+          POCKETCORE_KEYSTORE_PASSWORD: ${{ secrets.POCKETCORE_KEYSTORE_PASSWORD }}
+          POCKETCORE_KEY_ALIAS: ${{ secrets.POCKETCORE_KEY_ALIAS }}
+          POCKETCORE_KEY_PASSWORD: ${{ secrets.POCKETCORE_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease :app:bundleRelease --no-daemon
+
+      - name: Check the signature and the package
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f | sort | tail -1)
+          AAPT=$(find "${ANDROID_HOME}/build-tools" -name aapt2 -type f | sort | tail -1)
+          "${APKSIGNER}" verify --print-certs "${APK}" | tee signature.txt
+          grep -q "com.corejbh.pocketcore" <("${AAPT}" dump packagename "${APK}") \
+            || { echo "::error::the APK is not com.corejbh.pocketcore"; exit 1; }
+          # A debug-signed artifact must never be published.
+          if grep -qi "CN=Android Debug" signature.txt; then
+            echo "::error::the APK is signed with the Android debug key"
+            exit 1
+          fi
+          sha256sum "${APK}" app/build/outputs/bundle/release/app-release.aab
+
+      - name: Keep the artifacts
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: pocketcore-release
+          path: |
+            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+
+  publish:
+    name: Attach the signed APK to the GitHub release
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download the built artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pocketcore-release
+          path: dist
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          APK=dist/app-release.apk
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${APK}" --clobber
+          else
+            gh release create "${TAG}" "${APK}" \
+              --title "PocketCore ${TAG}" \
+              --notes "Release-signed PocketCore (com.corejbh.pocketcore, versionCode $(grep -o 'versionCode = [0-9]*' app/build.gradle.kts | head -1 | grep -o '[0-9]*')). Signed with the same release key as the Google Play build; SHA-256 of the APK is in the workflow log."
+          fi

@@ -409,6 +409,70 @@ object NodeController {
         clientAllowed(_state.value.status, listenerVerified, node.isAlive())
     }
 
+    /**
+     * The facts a sensitive RPC ([SensitiveRpcFacts]) is gated on, read now.
+     *
+     * [port]'s owner is asked of the daemon's own /proc entry again, not taken
+     * from [listenerVerified]: the flag records one proof made at the start, and
+     * a long snapshot request needs the port that exists at the moment it is
+     * sent (versionCode 21).
+     */
+    private fun sensitiveFacts(generation: Long, port: Int): SensitiveRpcFacts = SensitiveRpcFacts(
+        status = _state.value.status,
+        listenerVerified = listenerVerified,
+        alive = node.isAlive(),
+        shouldRun = settings.state.value.shouldRun,
+        generation = generation,
+        currentGeneration = lifecycle.current(),
+        owner = node.listenerOwner(port)
+    )
+
+    /**
+     * Opens the gate for a request that changes or walks the chainstate
+     * (`loadtxoutset`, `dumptxoutset`, `scantxoutset`).
+     *
+     * Fail-closed like [client], and stricter: every fact in [SensitiveRpcFacts]
+     * has to hold at this instant, and the generation is handed back so the
+     * caller can ask [sensitiveReplyProblem] after the reply. The refusal says
+     * which fact failed, so the card can tell the user what to do instead of
+     * showing a generic "start the node".
+     */
+    internal fun openSensitiveRpc(): SensitiveOpen {
+        val current = rpc
+        if (current != null) {
+            val facts = sensitiveFacts(lifecycle.current(), current.port)
+            if (sensitiveRpcAllowed(facts)) return SensitiveOpen(SensitiveCall(current, facts.generation), null)
+            val refusal = sensitiveRpcRefusal(facts)
+            Log.w(TAG, "Sensitive RPC refused: $refusal")
+            return SensitiveOpen(null, refusal)
+        }
+        // No client at all: the same three facts, said the same way.
+        val refusal = when {
+            !node.isAlive() ->
+                "The node process is gone, so the request was not sent. Start the node and try again."
+            _state.value.status != NodeStatus.RUNNING ->
+                "The node is not running, so the request was not sent. Start the node and try again."
+            else -> "The RPC listener has not been verified as this node's, so the request was not sent."
+        }
+        Log.w(TAG, "Sensitive RPC refused: $refusal")
+        return SensitiveOpen(null, refusal)
+    }
+
+    /**
+     * Why a sensitive request's reply must not be published, or null when it may.
+     *
+     * The same facts are read again after the call: a stop, a restart, a dead
+     * daemon or a port that changed hands while `loadtxoutset` was writing a
+     * chainstate makes the reply a fact about a node that is no longer the one on
+     * screen, so the card reports a lost result instead of claiming the work was
+     * done (versionCode 21).
+     */
+    internal fun sensitiveReplyProblem(call: SensitiveCall): String? {
+        val facts = sensitiveFacts(call.generation, call.client.port)
+        if (sensitiveRpcAllowed(facts)) return null
+        return sensitiveRpcRefusal(facts)
+    }
+
     fun start(force: Boolean = false) {
         scope.launch {
             awaitSettings()
@@ -1252,6 +1316,7 @@ object NodeController {
                 }
                 val result = runCatching {
                     val target = NodeConfig.snapshotTarget(appContext, label)
+                    val network = settings.state.value.network
                     // Before a byte moves: a snapshot is gigabytes, and filling the
                     // volume half way through leaves a .part file and a user who
                     // waited for nothing (see [StorageBudget]).
@@ -1262,6 +1327,15 @@ object NodeController {
                             StorageBudget.shortageMessage(sourceBytes, freeBytes, action = "import")
                         )
                     }
+                    // The header is Core's own validation, made here before anything is
+                    // copied: a screenshot, an older format or a snapshot of another
+                    // network is refused in the card, not after gigabytes of the wrong
+                    // file have been written and loadtxoutset has been handed the path
+                    // (versionCode 21).
+                    val header = appContext.contentResolver.openInputStream(uri)?.use {
+                        SnapshotHeader.read(it)
+                    } ?: throw IllegalStateException("The selected file cannot be read.")
+                    SnapshotHeader.problem(header, network)?.let { throw IllegalStateException(it) }
                     // The copy lands in a .part file next to the target and is renamed
                     // only once it is complete and plausible: an interrupted or
                     // rejected import leaves no half file behind for the daemon, and
@@ -1273,8 +1347,12 @@ object NodeController {
                         stream.use { input ->
                             partial.outputStream().use { output -> input.copyTo(output) }
                         }
-                        if (partial.length() < 1024) {
-                            throw IllegalStateException("That file is too small to be a UTXO snapshot.")
+                        // The bytes that were copied are the bytes that were checked:
+                        // a source that changed between the two reads, or a copy that
+                        // stopped short, is caught here instead of by the daemon.
+                        val copied = partial.inputStream().use { SnapshotHeader.read(it) }
+                        SnapshotHeader.problem(copied, network)?.let {
+                            throw IllegalStateException("The copied file is not the chosen snapshot: $it")
                         }
                         if (!partial.renameTo(target)) {
                             throw IllegalStateException("The snapshot could not be moved into place.")
@@ -1377,23 +1455,26 @@ object NodeController {
                 val network = settings.state.value.network
                 val name = displayName?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
                     ?: "pocketcore-${network.chainArg}.dat"
-                // The same gate every other RPC caller goes through ([client]): a
-                // dump is a long request to the daemon, and it may only be sent to a
-                // port this app has proved is its own node. The gate is asked
+                // The same sensitive gate every chainstate-walking request goes
+                // through (versionCode 21): a dump is minutes of the daemon's time on
+                // a chainstate, and it may only be sent to a port this app has proved
+                // is its own node, still running the daemon the user started. Asked
                 // before the card switches to "busy", so a stopped node gets the
                 // refusal instead of a progress line that cannot advance.
-                val client = client()
-                if (client == null) {
+                val open = openSensitiveRpc()
+                val call = open.call
+                if (call == null) {
                     updateWithStateLock {
                         it.copy(
                             snapshotExport = SnapshotExportModel(
                                 fileName = name,
-                                error = "Start the node before exporting a snapshot."
+                                error = open.refusal
                             )
                         )
                     }
                     return@run
                 }
+                val client = call.client
                 updateWithStateLock {
                     it.copy(
                         snapshotExport = SnapshotExportModel(
@@ -1485,18 +1566,30 @@ object NodeController {
                 temp.delete()
                 partial.delete()
                 val saved = outcome.getOrNull()
+                // A dump that ended while the node was stopped or replaced did not
+                // produce a file this app can vouch for: the checkpoint comparison
+                // below is what makes the file loadable elsewhere, and it is not a
+                // statement about a chainstate that is no longer the one on screen
+                // (versionCode 21).
+                val problem = sensitiveReplyProblem(call)
                 updateWithStateLock {
                     it.copy(
-                        snapshotExport = if (saved != null) {
-                            SnapshotExportModel(
+                        snapshotExport = when {
+                            saved != null && problem == null -> SnapshotExportModel(
                                 fileName = name,
                                 bytesWritten = saved.second,
                                 dump = saved.first,
                                 checkpoint = checkpoint,
                                 checkpointVerified = checkpointVerified(saved.first, checkpoint)
                             )
-                        } else {
-                            SnapshotExportModel(
+                            saved != null -> SnapshotExportModel(
+                                fileName = name,
+                                checkpoint = checkpoint,
+                                error = "The dump finished, but the node changed while it ran: " +
+                                    "$problem The file was not checked against the checkpoint, so treat " +
+                                    "it as this phone's file only."
+                            )
+                            else -> SnapshotExportModel(
                                 fileName = name,
                                 checkpoint = checkpoint,
                                 error = outcome.exceptionOrNull()?.message
@@ -1538,34 +1631,58 @@ object NodeController {
             // reads is the one CLEAR deletes, and the chainstate this writes is
             // the one EXPORT dumps.
             snapshotGate.run {
-                // Through the gate as well: loading a snapshot writes the chainstate
-                // of the daemon on the other end, and that must be this app's node.
-                val client = client()
+                // A load rewrites the chainstate of the daemon on the other end, so it
+                // goes through the sensitive gate rather than the ordinary client
+                // gate: the listener proof, the daemon process, the user's intent and
+                // the lifecycle generation are all read at this instant, and again
+                // when the reply comes back (versionCode 21).
                 val path = settings.state.value.snapshotPath
-                if (client == null) {
-                    updateWithStateLock {
-                        it.copy(snapshot = it.snapshot.copy(error = "Start the node before loading a snapshot."))
-                    }
-                    return@run
-                }
                 if (path == null || !File(path).exists()) {
                     updateWithStateLock {
                         it.copy(snapshot = it.snapshot.copy(error = "Choose a snapshot file first."))
                     }
                     return@run
                 }
-                // Core writes a whole chainstate out of this file, so the volume
-                // needs room for it beside the snapshot itself. Checked before the
-                // call, because inside `loadtxoutset` a full volume stops the
-                // daemon half way through a chainstate it then has to rebuild.
+                val open = openSensitiveRpc()
+                val call = open.call
+                if (call == null) {
+                    updateWithStateLock {
+                        it.copy(snapshot = it.snapshot.copy(busy = false, error = open.refusal))
+                    }
+                    return@run
+                }
+                val network = settings.state.value.network
+                // Core replays the whole file as a chainstate, and refuses a header it
+                // does not recognise only after it has started reading. The header is
+                // checked here, so a file that is not a snapshot of this network is
+                // refused in the card instead of inside a loadtxoutset that has
+                // already begun (versionCode 21).
+                val headerProblem = runCatching {
+                    File(path).inputStream().use { SnapshotHeader.read(it) }
+                }.getOrNull()?.let { SnapshotHeader.problem(it, network) }
+                if (headerProblem != null) {
+                    updateWithStateLock {
+                        it.copy(snapshot = it.snapshot.copy(busy = false, error = headerProblem))
+                    }
+                    return@run
+                }
+                // Core writes a whole second chainstate (`chainstate_snapshot/`) and
+                // keeps the existing one beside it, so the free space has to cover a
+                // chainstate, not just the file that is already on disk
+                // ([StorageBudget.requiredLoadBytes]).
                 val snapshotBytes = runCatching { File(path).length() }.getOrDefault(-1L)
                 val freeBytes = NodePaths.freeSpaceBytes(appContext)
-                if (!StorageBudget.fits(freeBytes, snapshotBytes)) {
+                val chainstateBytes = NodePaths.chainstateBytes(appContext, network)
+                if (!StorageBudget.fitsLoad(freeBytes, snapshotBytes, chainstateBytes)) {
                     updateWithStateLock {
                         it.copy(
                             snapshot = it.snapshot.copy(
                                 busy = false,
-                                error = StorageBudget.shortageMessage(snapshotBytes, freeBytes, action = "load")
+                                error = StorageBudget.loadShortageMessage(
+                                    snapshotBytes,
+                                    chainstateBytes,
+                                    freeBytes
+                                )
                             )
                         )
                     }
@@ -1574,11 +1691,17 @@ object NodeController {
                 updateWithStateLock {
                     it.copy(snapshot = it.snapshot.copy(busy = true, error = null, result = null))
                 }
-                val outcome = runCatching { client.loadTxOutSet(path) }
+                val outcome = runCatching { call.client.loadTxOutSet(path) }
+                // The reply is a fact about the daemon that was asked. If the user
+                // stopped the node, it was restarted or the process died while the
+                // chainstate was written, the result is about a node that is no longer
+                // on screen - reported as a lost result instead of being written back
+                // as this node's state.
+                val problem = sensitiveReplyProblem(call)
                 val json: JSONObject? = outcome.getOrNull()
                 updateWithStateLock {
                     it.copy(
-                        snapshot = if (json != null) {
+                        snapshot = if (json != null && problem == null) {
                             it.snapshot.copy(
                                 busy = false,
                                 result = describeLoadResult(json),
@@ -1587,7 +1710,13 @@ object NodeController {
                         } else {
                             it.snapshot.copy(
                                 busy = false,
-                                error = outcome.exceptionOrNull()?.message ?: "loadtxoutset failed"
+                                error = if (json != null) {
+                                    "The snapshot was loaded, but the node changed while it ran: " +
+                                        "$problem The result was not recorded; check SYNC and load it " +
+                                        "again if the snapshot chainstate is not there."
+                                } else {
+                                    outcome.exceptionOrNull()?.message ?: "loadtxoutset failed"
+                                }
                             )
                         }
                     )
