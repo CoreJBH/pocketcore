@@ -50,14 +50,7 @@ class BinaryIntegrityTest {
         try {
             // Any digest of the right shape is accepted as input; a mismatch is
             // still a mismatch.
-            assertFalse(
-                BinaryIntegrity.verify(
-                    file = file,
-                    expectedSha256 = "0".repeat(64),
-                    stampFile = null,
-                    buildTag = "12"
-                )
-            )
+            assertFalse(BinaryIntegrity.verify(file, "0".repeat(64)))
         } finally {
             file.delete()
         }
@@ -67,54 +60,36 @@ class BinaryIntegrityTest {
     fun refusesAMissingFileAndAMalformedDigest() {
         val missing = File(Files.createTempDirectory("daemon").toFile(), "gone.so")
         assertNull(BinaryIntegrity.sha256(missing))
-        assertFalse(BinaryIntegrity.verify(missing, "a".repeat(64), null, "12"))
+        assertFalse(BinaryIntegrity.verify(missing, "a".repeat(64)))
         val file = tempFile(content)
         try {
             assertFalse("a short hash is not a digest", BinaryIntegrity.isDigest("abc123"))
-            assertFalse(BinaryIntegrity.verify(file, "abc123", null, "12"))
+            assertFalse(BinaryIntegrity.verify(file, "abc123"))
             assertTrue(BinaryIntegrity.isDigest("A".repeat(64).lowercase()))
+            // An uppercase digest is the same digest.
+            assertTrue(BinaryIntegrity.verify(file, contentSha256.uppercase()))
         } finally {
             file.delete()
         }
     }
 
     /**
-     * The verdict is cached for one build only: the same build reuses it, and a
-     * new versionCode (or a different daemon in the same one) does not.
+     * Regression (versionCode 20): the verdict is never cached on disk. A file
+     * that verified once and was replaced afterwards must fail the next check,
+     * even though the same build asks again.
      */
     @Test
-    fun cachesTheVerdictPerBuild() {
+    fun aFileReplacedAfterAVerifiedCheckFailsTheNextOne() {
         val file = tempFile(content)
-        val stamp = File(Files.createTempDirectory("stamp").toFile(), "binary-integrity.txt")
         try {
-            val actual = BinaryIntegrity.sha256(file)!!
-            assertFalse(BinaryIntegrity.stampMatches(stamp, "12 x", actual))
-            assertTrue(BinaryIntegrity.verify(file, actual, stamp, "12 x"))
-            assertTrue("the verdict was written", stamp.isFile)
-            assertTrue(BinaryIntegrity.stampMatches(stamp, "12 x", actual))
-            // A different build tag is not served by the cached line.
-            assertFalse(BinaryIntegrity.stampMatches(stamp, "13 x", actual))
-            // An uppercase digest is the same digest.
-            assertTrue(BinaryIntegrity.verify(file, actual.uppercase(), stamp, "13 x"))
-        } finally {
-            file.delete()
-            stamp.parentFile?.deleteRecursively()
-        }
-    }
-
-    /** The cache must not turn a changed file into a pass for another build. */
-    @Test
-    fun aChangedFileFailsWhenTheCacheBelongsToAnotherBuild() {
-        val file = tempFile(content)
-        val stamp = File(Files.createTempDirectory("stamp").toFile(), "binary-integrity.txt")
-        try {
-            val actual = BinaryIntegrity.sha256(file)!!
-            assertTrue(BinaryIntegrity.verify(file, actual, stamp, "12 x"))
+            assertTrue(BinaryIntegrity.verify(file, contentSha256))
             file.writeText("$(content) tampered")
-            assertFalse(BinaryIntegrity.verify(file, actual, stamp, "13 x"))
+            assertFalse(
+                "the second check must look at the file, not at an older verdict",
+                BinaryIntegrity.verify(file, contentSha256)
+            )
         } finally {
             file.delete()
-            stamp.parentFile?.deleteRecursively()
         }
     }
 }

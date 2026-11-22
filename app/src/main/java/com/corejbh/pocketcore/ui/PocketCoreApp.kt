@@ -21,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -32,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.corejbh.pocketcore.core.NodeController
+import kotlinx.coroutines.launch
 
 /**
  * Four destinations: the node dashboard, the sync tools, the chain explorer and
@@ -47,6 +49,11 @@ fun PocketCoreApp() {
     // Plain mutableStateOf: rememberSaveable can only store Bundle-compatible
     // values, and a MutableIntState is not one of them.
     var tab by rememberSaveable { mutableStateOf(0) }
+    // Settings are written on Dispatchers.IO (NodeSettings), so a change is
+    // started here and the next action is taken after it has landed: the
+    // restart that follows a network or Tor change has to read the value the
+    // user just chose, not the one before it (versionCode 20).
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(state.message) {
         state.message?.let { message ->
@@ -90,29 +97,39 @@ fun PocketCoreApp() {
                     state = state,
                     config = config,
                     onNetworkChange = { network ->
-                        NodeController.settings.setNetwork(network)
-                        NodeController.applySettingsAndMaybeRestart()
+                        scope.launch {
+                            NodeController.settings.setNetwork(network)
+                            NodeController.applySettingsAndMaybeRestart()
+                        }
                     },
                     onPruneChange = { value ->
-                        NodeController.settings.setPruneMb(value)
-                        NodeController.applySettingsAndMaybeRestart()
+                        scope.launch {
+                            NodeController.settings.setPruneMb(value)
+                            NodeController.applySettingsAndMaybeRestart()
+                        }
                     },
                     onWifiOnlyChange = { value ->
-                        NodeController.settings.setWifiOnly(value)
-                        NodeController.applySettingsAndMaybeRestart(restartIfRunning = false)
+                        scope.launch {
+                            NodeController.settings.setWifiOnly(value)
+                            NodeController.applySettingsAndMaybeRestart(restartIfRunning = false)
+                        }
                     },
                     onChargingOnlyChange = { value ->
-                        NodeController.settings.setChargingOnly(value)
-                        NodeController.applySettingsAndMaybeRestart(restartIfRunning = false)
+                        scope.launch {
+                            NodeController.settings.setChargingOnly(value)
+                            NodeController.applySettingsAndMaybeRestart(restartIfRunning = false)
+                        }
                     },
                     onTorProxyChange = { value ->
                         // proxy= only takes effect when the daemon reads its
                         // configuration, so a running node is restarted.
-                        NodeController.settings.setTorProxy(value)
-                        NodeController.applySettingsAndMaybeRestart()
+                        scope.launch {
+                            NodeController.settings.setTorProxy(value)
+                            NodeController.applySettingsAndMaybeRestart()
+                        }
                     },
-                    onRebuildAsFull = { NodeController.rebuildChainAsFull() },
-                    onWipeData = { NodeController.wipeNodeData() }
+                    onRebuildAsFull = { scope.launch { NodeController.rebuildChainAsFull() } },
+                    onWipeData = { scope.launch { NodeController.wipeNodeData() } }
                 )
             }
         }

@@ -86,12 +86,12 @@ class NodeService : Service() {
         }
         updateNotification(NodeController.state.value)
         syncWakeLock(NodeController.state.value.status)
-        if (NodeController.settings.state.value.shouldRun &&
-            NodeController.state.value.status == NodeStatus.STOPPED
-        ) {
-            // The system recreated the service after the app process was killed.
-            NodeController.start()
-        }
+        // Resuming a node that was running stays with the controller: it waits
+        // for the stored settings before deciding anything. The check that used
+        // to sit here read `shouldRun` from the defaults - a service recreated
+        // before the load finished saw false and never started the node - and
+        // duplicated what [NodeController.startup] already does (versionCode 20).
+        NodeController.resumeAfterRecreate()
         return START_STICKY
     }
 

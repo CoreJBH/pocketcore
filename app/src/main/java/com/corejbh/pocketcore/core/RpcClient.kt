@@ -35,6 +35,21 @@ object RpcCode {
 }
 
 /**
+ * Parameters of one `getrawtransaction` call.
+ *
+ * Verbosity 2 - not the boolean `true` - is what carries each input's `prevout`
+ * and therefore the input values: without them the input total is unknown and
+ * the screen has no fee to show. A block hash given by the caller pins the
+ * lookup to that block (versionCode 20).
+ */
+internal fun rawTransactionParams(txid: String, blockHash: String?): List<Any?> =
+    if (blockHash.isNullOrBlank()) {
+        listOf(txid, 2)
+    } else {
+        listOf(txid, 2, blockHash)
+    }
+
+/**
  * Minimal blocking JSON-RPC client for the local daemon.
  *
  * Only loopback HTTP is used; the app's network security config permits
@@ -160,10 +175,11 @@ class RpcClient(
     suspend fun block(hash: String): JSONObject =
         call("getblock", listOf(hash, 2), timeoutMs = 60_000).asObject()
 
-    suspend fun rawTransaction(txid: String, blockHash: String? = null): JSONObject {
-        val params = if (blockHash.isNullOrBlank()) listOf(txid, true) else listOf(txid, true, blockHash)
-        return call("getrawtransaction", params, timeoutMs = 30_000).asObject()
-    }
+    /**
+     * A transaction with its inputs expanded (verbosity 2, [rawTransactionParams]).
+     */
+    suspend fun rawTransaction(txid: String, blockHash: String? = null): JSONObject =
+        call("getrawtransaction", rawTransactionParams(txid, blockHash), timeoutMs = 30_000).asObject()
 
     suspend fun sendRawTransaction(hex: String): String =
         call("sendrawtransaction", listOf(hex), timeoutMs = 30_000).asString()

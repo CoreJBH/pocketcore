@@ -22,8 +22,8 @@ package com.corejbh.pocketcore.core
  */
 class PortResolver(
     private val isFree: (Int) -> Boolean,
-    private val findFree: (Int, Set<Int>) -> Int,
-    private val findFreeListenPair: (Int, Set<Int>) -> Int,
+    private val findFree: (Int, Set<Int>) -> Int?,
+    private val findFreeListenPair: (Int, Set<Int>) -> Int?,
     private val awaitFree: (Int, Long) -> Boolean
 ) {
 
@@ -36,7 +36,13 @@ class PortResolver(
          * the node moved away from it. The credential pair is replaced for this
          * start, so nothing that may have seen an older one keeps a valid key.
          */
-        val rotateCredentials: Boolean
+        val rotateCredentials: Boolean,
+        /**
+         * Set when no usable RPC endpoint was found at all. Starting the daemon
+         * on a port another app holds only ends in Core's fatal
+         * "Unable to bind", so the caller reports this instead (versionCode 20).
+         */
+        val error: String? = null
     )
 
     /**
@@ -90,7 +96,15 @@ class PortResolver(
         var p2pPort = defaultP2p
         if (p2pListener && (!isFree(p2pPort) || !isFree(p2pPort + 1))) {
             val chosen = findFreeListenPair(p2pPort, setOf(defaultRpc))
-            if (chosen != p2pPort) {
+            if (chosen == null) {
+                // A busy P2P port is not fatal - outbound connections still work -
+                // so the node starts and the screen says why inbound peers are
+                // missing, instead of naming a port the node does not listen on.
+                notes.add(
+                    "P2P port $p2pPort is in use and no free pair was found. " +
+                        "The node runs without inbound peers."
+                )
+            } else if (chosen != p2pPort) {
                 notes.add("P2P port $p2pPort is in use. Using $chosen for inbound peers.")
                 p2pPort = chosen
             }
@@ -103,6 +117,21 @@ class PortResolver(
         val rpcTaken = !isFree(rpcPort) || reservedByP2p
         if (rpcTaken) {
             val chosen = findFree(rpcPort, setOf(p2pPort, p2pPort + 1))
+            if (chosen == null) {
+                // Nothing in the window is free. The daemon would refuse the
+                // endpoint with a fatal bind error, so the start is reported here
+                // - as a failure with the ports that were tried - rather than
+                // launched on a port of somebody else (versionCode 20).
+                return Choice(
+                    rpc = rpcPort,
+                    p2p = p2pPort,
+                    note = notes.joinToString(" ").ifBlank { null },
+                    rotateCredentials = false,
+                    error = "No free RPC port was found from $rpcPort upward. Another app is holding " +
+                        "the ports this node needs. Stop the other app or restart the phone, then press " +
+                        "START NODE."
+                )
+            }
             if (chosen != rpcPort) {
                 if (reservedByP2p) {
                     notes.add(

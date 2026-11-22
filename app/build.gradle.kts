@@ -94,6 +94,27 @@ android {
         applicationId = "com.corejbh.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 20: tenth security and state review. Ten findings, all in
+        // the app: the daemon is unchanged. ABORT now cancels the scan job before
+        // it asks the daemon to abort and checks the job after the scan returns,
+        // so a cancelled scan can no longer write its reply over the cancelled
+        // state. A foreign port or an unexpected exit is only acted on while the
+        // start that saw it is still the current one and the node is meant to
+        // run, so neither flips a node the user just stopped to ERROR. The
+        // private-key check on a pasted descriptor is case-sensitive and decoded
+        // from the version bytes, because lowercasing the input refused valid
+        // xpub/zpub keys whose Base58 happened to carry the letters xprv. Settings
+        // writes run on Dispatchers.IO (a synchronous commit() no longer runs on
+        // the frame that drew the switch), the RPC password is generated only
+        // when nothing is stored yet, the saved descriptor is loaded once at
+        // startup instead of on every visit to SETTINGS, the service defers the
+        // resume to the controller after the settings are read, a new snapshot
+        // import deletes the old .dat files and a full wipe takes the snapshots
+        // folder with it, a full scan of 0.0.0.0 as well as 127.0.0.1 decides
+        // whether a port is free and a failure to find one is reported instead of
+        // reused, the bundled daemon is hashed on every cold start rather than
+        // answered from a stamp on disk, and transaction lookups ask for
+        // verbosity 2 so the fee is there to show.
         // versionCode 19: ninth security and state review. The bundled daemon is
         // no longer executed for its version line before it has been verified:
         // `version()` goes through prepareBinary() (existence, size, the build's
@@ -250,7 +271,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 19
+        versionCode = 20
         versionName = "1.0.0"
 
         // The hash of the bundled daemon, embedded for the integrity check in

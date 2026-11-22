@@ -122,6 +122,18 @@ data class SnapshotExportModel(
     /** Size of the file that was written to that document. */
     val bytesWritten: Long? = null,
     val dump: TxOutSetDump? = null,
+    /**
+     * The official checkpoint the dump was rolled back to. A snapshot is
+     * accepted by another phone only at one of these heights, so every export
+     * names the one it used (versionCode 20).
+     */
+    val checkpoint: AssumeUtxoCheckpoint? = null,
+    /**
+     * True when the dumped UTXO set hash equals the checkpoint's. That is what
+     * another phone's `loadtxoutset` compares, so a verified file is loadable
+     * there; null before a dump has produced its reply.
+     */
+    val checkpointVerified: Boolean? = null,
     val error: String? = null
 )
 
@@ -332,12 +344,35 @@ object NodeController {
         }
         val version = node.version()
         if (version.isNotEmpty()) _state.update { it.copy(binaryVersion = version) }
+        // The watch-only descriptor saved with the last scan is loaded here, once
+        // per process. SETTINGS used to do it from a LaunchedEffect that ran every
+        // time the tab was shown, so a descriptor the user had just cleared came
+        // back into the field on the next visit (versionCode 20).
+        DescriptorScanController.loadSaved(config.descriptorInput, config.descriptorNormalized)
         // The peer country table is a 130 KB asset: decompress it before the
         // first peer list is drawn, never on the UI thread.
         GeoIp.ensureLoaded(appContext)
         // Resume a node that was running when the app process was recreated.
-        if (config.shouldRun && !node.isAlive() && _state.value.status == NodeStatus.STOPPED) {
-            start()
+        resumeAfterRecreate()
+    }
+
+    /**
+     * Starts the node again after the process or the service was recreated,
+     * once the stored settings are known.
+     *
+     * Nothing is decided before [settings.load] has run: the defaults hold
+     * `shouldRun = false` whatever the user chose, so a check read from them
+     * either skipped the resume or (with the activity still up) acted on a
+     * setting nobody had read yet. The service asks for this instead of looking
+     * at the settings itself (versionCode 20).
+     */
+    fun resumeAfterRecreate() {
+        scope.launch {
+            awaitSettings()
+            val config = settings.state.value
+            if (config.shouldRun && !node.isAlive() && _state.value.status == NodeStatus.STOPPED) {
+                start()
+            }
         }
     }
 
@@ -743,6 +778,14 @@ object NodeController {
         launchService()
 
         val ports = resolvePorts(config)
+        if (ports.error != null) {
+            // No free endpoint in the window the resolver searched. Starting
+            // anyway would hand the daemon a port another app holds and end in
+            // Core's "Unable to bind" - so the reason is reported instead, in
+            // the same place a failed start would be (versionCode 20).
+            fail(ports.error)
+            return
+        }
         // Hold both endpoints from here until the daemon is launched: the check
         // and the bind are separate steps, and while the configuration is being
         // written another app must not be able to claim the port that was just
@@ -789,7 +832,7 @@ object NodeController {
     /** Suffix of a snapshot still being copied. */
     private const val PART_SUFFIX = ".part"
 
-    private fun fail(message: String) {
+    private suspend fun fail(message: String) {
         Log.e(TAG, message)
         pollJob?.cancel()
         pollJob = null
@@ -842,7 +885,7 @@ object NodeController {
             if ((status == NodeStatus.STARTING || status == NodeStatus.RUNNING) &&
                 isCurrent(generation)
             ) {
-                handleUnexpectedExit()
+                handleUnexpectedExit(generation)
             }
             return
         }
@@ -874,7 +917,7 @@ object NodeController {
                     return
                 }
                 SocketOwner.FOREIGN -> {
-                    if (isCurrent(generation)) handleForeignPort(null)
+                    if (isCurrent(generation)) handleForeignPort(generation, null)
                     return
                 }
                 SocketOwner.UNKNOWN -> {
@@ -952,7 +995,7 @@ object NodeController {
             if (error.code == HTTP_UNAUTHORIZED || error.code == HTTP_FORBIDDEN) {
                 // Something answered on the RPC port and refused this start's
                 // credentials, which exist only in this process.
-                if (isCurrent(generation)) handleForeignPort(error.code)
+                if (isCurrent(generation)) handleForeignPort(generation, error.code)
                 return
             }
             val elapsed = System.currentTimeMillis() - startedAt
@@ -1015,11 +1058,18 @@ object NodeController {
      * limited by [autoRetried] so a port that keeps changing hands ends in a
      * clear error instead of a start loop.
      */
-    private fun handleForeignPort(code: Int?) {
+    private fun handleForeignPort(generation: Long, code: Int?) {
         pollJob?.cancel()
         pollJob = null
         scope.launch {
             mutex.withLock {
+                // The reply came from an endpoint this start could not account
+                // for, but this is only that start's problem while it is still
+                // the current one and the node is meant to run: a STOP that ran
+                // meanwhile has already published STOPPED and cleared the state,
+                // and writing ERROR over it described a node the user had just
+                // stopped (versionCode 20).
+                if (!isCurrent(generation) || !settings.state.value.shouldRun) return@withLock
                 val retry = !autoRetried && settings.state.value.shouldRun
                 if (retry) {
                     autoRetried = true
@@ -1053,7 +1103,7 @@ object NodeController {
      * The daemon is gone. If it died because its RPC port was taken, restart it
      * once on a verified free port; otherwise report the exact Core line.
      */
-    private fun handleUnexpectedExit() {
+    private fun handleUnexpectedExit(generation: Long) {
         // The poll loop that found the daemon gone is retired at once, so no
         // second pass can enter here again while the restart is being decided.
         pollJob?.cancel()
@@ -1064,6 +1114,10 @@ object NodeController {
             detail.contains("already running", true)
         scope.launch {
             mutex.withLock {
+                // Same rule as [handleForeignPort]: an exit noticed by a start
+                // that has since been stopped is not an ERROR, and a node the
+                // user stopped must not be restarted by the retry below.
+                if (!isCurrent(generation) || !settings.state.value.shouldRun) return@withLock
                 if (node.isAlive()) return@withLock
                 // Read and set under the same lock as every other start, so two
                 // exits cannot both decide they are the one retry.
@@ -1232,6 +1286,16 @@ object NodeController {
                     target
                 }
                 val target = result.getOrNull()
+                // A new snapshot replaces the old one. The previous .dat is deleted
+                // once the new file is in place - together with any .part a killed
+                // import left behind - so the folder does not keep every snapshot
+                // ever imported, none of which anything points at (versionCode 20).
+                if (target != null) {
+                    runCatching {
+                        NodePaths.staleSnapshotFiles(NodePaths.snapshotDir(appContext), keep = target)
+                            .forEach { it.delete() }
+                    }
+                }
                 // Published with the gate held, so a CLEAR asked for during the
                 // copy runs after this and deletes what this path points at. The
                 // settings write and the state that shows it happen under one
@@ -1283,8 +1347,19 @@ object NodeController {
     }
 
     /**
-     * Writes this node's current UTXO set with `dumptxoutset` and copies it into
-     * the document the user picked.
+     * Writes this node's UTXO set with `dumptxoutset` and copies it into the
+     * document the user picked.
+     *
+     * The dump is rolled back to the newest official AssumeUTXO checkpoint of the
+     * selected network ([AssumeUtxo.latest]), not taken at the tip. That is the
+     * difference between a file this phone can reload and one another phone can:
+     * `loadtxoutset` accepts a snapshot only when the height and the serialized
+     * UTXO set hash match a checkpoint compiled into the daemon, and `latest`
+     * matches none. The height and the prune horizon are checked before the dump
+     * ([checkpointExportProblem]), the checkpoint's block hash is compared with
+     * this node's own block at that height, and the reply's `txoutset_hash` is
+     * compared with the checkpoint afterwards ([checkpointVerified]) - so the
+     * screen can say whether the file will load elsewhere rather than guess.
      *
      * The daemon can only write to a path of its own (it runs as this app's UID),
      * so the dump lands in the cache directory first and is streamed into the
@@ -1328,6 +1403,62 @@ object NodeController {
                         )
                     )
                 }
+                // A .dat dumped at this node's own tip is loadable only by this
+                // phone: loadtxoutset accepts a snapshot only when it matches a
+                // checkpoint compiled into the daemon. The export is therefore
+                // rolled back to the newest official checkpoint, which is what
+                // makes the file usable on another phone.
+                val checkpoint = AssumeUtxo.latest(network)
+                val blocked = runCatching { client.blockchainInfo() }.getOrNull()?.let { chain ->
+                    checkpointExportProblem(
+                        syncedBlocks = chain.blocks,
+                        pruned = chain.pruned,
+                        pruneHeight = chain.pruneHeight,
+                        checkpoint = checkpoint
+                    )
+                }
+                if (blocked != null) {
+                    updateWithStateLock {
+                        it.copy(
+                            snapshotExport = SnapshotExportModel(
+                                fileName = name,
+                                checkpoint = checkpoint,
+                                error = blocked
+                            )
+                        )
+                    }
+                    return@run
+                }
+                // The checkpoint names a block hash. Asking the node for its own
+                // block at that height is what ties the built-in value to the
+                // chain on disk: a mismatch means the dump would not be the
+                // snapshot another phone expects, so nothing is dumped.
+                val nodeHash = runCatching { client.blockHash(checkpoint.height) }.getOrNull()
+                if (nodeHash != null && !nodeHash.equals(checkpoint.blockHash, ignoreCase = true)) {
+                    updateWithStateLock {
+                        it.copy(
+                            snapshotExport = SnapshotExportModel(
+                                fileName = name,
+                                checkpoint = checkpoint,
+                                error = "This node's block ${formatCount(checkpoint.height)} is " +
+                                    "${nodeHash.take(16)}..., not the official checkpoint's " +
+                                    "${checkpoint.blockHash.take(16)}.... The two chains differ, so a " +
+                                    "snapshot dumped here would not load on another phone."
+                            )
+                        )
+                    }
+                    return@run
+                }
+                updateWithStateLock {
+                    it.copy(
+                        snapshotExport = SnapshotExportModel(
+                            busy = true,
+                            stage = "Dumping the UTXO set at block ${formatCount(checkpoint.height)}",
+                            fileName = name,
+                            checkpoint = checkpoint
+                        )
+                    )
+                }
                 val temp = NodePaths.snapshotExportFile(appContext, network, System.currentTimeMillis())
                 val partial = File(temp.absolutePath + INCOMPLETE_SUFFIX)
                 val outcome = runCatching {
@@ -1335,7 +1466,9 @@ object NodeController {
                     // earlier may have left one of these behind.
                     temp.delete()
                     partial.delete()
-                    val dump = TxOutSetDump.from(client.dumpTxOutSet(temp.absolutePath))
+                    val dump = TxOutSetDump.from(
+                        client.dumpTxOutSet(temp.absolutePath, rollbackHeight = checkpoint.height)
+                    )
                     if (!temp.exists() || temp.length() < 1024) {
                         throw IllegalStateException("Core reported a snapshot but left no file to copy.")
                     }
@@ -1358,12 +1491,16 @@ object NodeController {
                             SnapshotExportModel(
                                 fileName = name,
                                 bytesWritten = saved.second,
-                                dump = saved.first
+                                dump = saved.first,
+                                checkpoint = checkpoint,
+                                checkpointVerified = checkpointVerified(saved.first, checkpoint)
                             )
                         } else {
                             SnapshotExportModel(
                                 fileName = name,
+                                checkpoint = checkpoint,
                                 error = outcome.exceptionOrNull()?.message
+                                    ?.let { message -> describeDumpFailure(message, checkpoint) }
                                     ?: "The snapshot could not be exported."
                             )
                         }
@@ -1516,11 +1653,22 @@ object NodeController {
                 } else {
                     dir.deleteRecursively().also { dir.mkdirs() }
                 }
+                if (!selectedNetworkOnly) {
+                    // The imported snapshot files are node data too: a full wipe
+                    // takes the snapshots folder with the chain it belongs to and
+                    // forgets the stored path, so no card is left naming a file
+                    // that is gone (versionCode 20).
+                    val snapshotDir = NodePaths.snapshotDir(appContext)
+                    snapshotDir.deleteRecursively()
+                    NodePaths.snapshotDir(appContext)
+                    settings.setSnapshot(null, null)
+                }
                 _state.update {
                     it.copy(
                         status = NodeStatus.STOPPED,
                         detail = null,
                         config = settings.state.value,
+                        snapshot = if (selectedNetworkOnly) it.snapshot else SnapshotModel(),
                         blockchain = null,
                         headerSync = null,
                         network = null,
@@ -1559,8 +1707,13 @@ object NodeController {
      * whose data the pruned flag does not concern at all.
      */
     fun rebuildChainAsFull() {
-        settings.setPruneMb(0)
-        wipeNodeData(selectedNetworkOnly = true)
+        // The setting is written first and the wipe is only requested once the
+        // write is on disk; both are IO work, so neither runs on the caller's
+        // thread (versionCode 20).
+        scope.launch {
+            settings.setPruneMb(0)
+            wipeNodeData(selectedNetworkOnly = true)
+        }
     }
 
     fun consumeMessage() {

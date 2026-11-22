@@ -389,8 +389,17 @@ bitcoin-cli getpeerinfo            # transport per peer (v1 or v2) and services
 
 ### Loading an AssumeUTXO snapshot
 
-1. On a desktop node of the same network, create a snapshot:
-   `bitcoin-cli dumptxoutset /path/utxo-<height>.dat latest`
+`loadtxoutset` accepts a snapshot only when it matches a checkpoint compiled into
+Bitcoin Core - the height, the block hash and the serialized UTXO set hash all
+have to agree. Core 32.1 carries these for mainnet (840,000 / 880,000 / 910,000 /
+935,000 / **965,000**), signet (160,000 / 290,000 / **320,000**) and testnet4
+(90,000 / 120,000 / **150,000**); PocketCore lists the newest of each on the SYNC
+screen. A snapshot dumped at a node's own tip therefore loads on the phone that
+made it and nowhere else.
+
+1. On a desktop node of the same network, create a snapshot at a checkpoint:
+   `bitcoin-cli dumptxoutset /path/utxo-965000.dat "" '{"rollback": 965000}'`
+   (mainnet; use the checkpoint height for that network).
 2. Copy the `.dat` file to the phone.
 3. In PocketCore open **SYNC**, choose the file, then press **LOAD SNAPSHOT**
    while the node is running (the app calls `loadtxoutset`). A snapshot is a few
@@ -403,23 +412,32 @@ bitcoin-cli getpeerinfo            # transport per peer (v1 or v2) and services
 
 ### Exporting one from the phone
 
-The same screen writes this node's own UTXO set, so a second phone (or this one
-after its chain data is deleted) can start from it:
+**SYNC -> EXPORT SNAPSHOT** writes a snapshot another phone can load, because it
+is dumped at the newest checkpoint of the selected network (mainnet 965,000,
+testnet4 150,000, signet 320,000) rather than at this node's tip:
 
-1. **SYNC -> EXPORT SNAPSHOT** while the node is running. The button is enabled
-   only then, and while no other snapshot operation is in flight.
+1. Press the button while the node is running. It is enabled only then, and
+   while no other snapshot operation is in flight.
 2. Choose where the file goes in the system picker; the name it suggests is
    `pocketcore-<network>-<height>-<date>.dat`.
-3. The app calls `dumptxoutset <cache file> latest`. The dump runs inside the
-   daemon - minutes on a phone - and the card shows the stage, then the base
-   height, the number of coins written and the UTXO set hash Core reported, plus
-   the size of the file that was saved.
-4. The dump lives in the app's cache only while it is copied to the file you
-   chose; the cache copy and Core's `<path>.incomplete` are removed afterwards.
+3. The app calls `dumptxoutset <cache file> "" {"rollback": <checkpoint>}`. The
+   dump runs inside the daemon - minutes on a phone - and the card shows the
+   stage, then the base height, the number of coins written and the UTXO set
+   hash Core reported, plus the size of the file that was saved.
+4. Before the dump the app compares the checkpoint's block hash with this node's
+   own block at that height, and afterwards it compares the dump's UTXO set hash
+   with the value in the daemon. Only when both match does the card say the file
+   will load on another phone.
 
-The exported file can be loaded with **LOAD SNAPSHOT** as above. It is a
-snapshot of the node's current UTXO set, so it is at the node's own height: a
-node that is still syncing exports the height it has actually validated.
+The export needs a node that has synced to the checkpoint and, if it is pruned,
+still holds that block. A pruned node deletes old blocks, so a checkpoint below
+its keep horizon cannot be dumped; the card says so and points at **STORAGE ->
+Full (prune=0)**, after which the node syncs to the checkpoint and the export
+works. A node that has not reached the checkpoint height is told the height to
+sync to instead.
+
+The dump lives in the app's cache only while it is copied to the file you chose;
+the cache copy and Core's `<path>.incomplete` are removed afterwards.
 
 ## Build the daemon
 

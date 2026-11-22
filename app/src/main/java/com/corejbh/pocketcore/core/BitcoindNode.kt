@@ -93,9 +93,7 @@ class BitcoindNode(private val context: Context) {
         }
         val intact = BinaryIntegrity.verify(
             file = file,
-            expectedSha256 = expected,
-            stampFile = NodePaths.binaryIntegrityStamp(context),
-            buildTag = BUILD_TAG
+            expectedSha256 = expected
         )
         if (!intact) {
             return "The bundled bitcoind does not match its checksum " +

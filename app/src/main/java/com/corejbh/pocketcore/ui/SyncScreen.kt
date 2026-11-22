@@ -24,6 +24,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.corejbh.pocketcore.core.AssumeUtxo
+import com.corejbh.pocketcore.core.BitcoinNetwork
 import com.corejbh.pocketcore.core.ChainStateInfo
 import com.corejbh.pocketcore.core.NodeStatus
 import com.corejbh.pocketcore.core.NodeUiState
@@ -57,6 +59,13 @@ fun SyncScreen(
         contract = ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri: Uri? ->
         if (uri != null) onExportSnapshot(uri, queryDisplayName(context, uri) ?: exportName)
+    }
+    // The newest official checkpoint of each network, for the LOAD note: those are
+    // the heights a file from another phone has to be at (versionCode 20).
+    val checkpoints = remember {
+        BitcoinNetwork.entries.joinToString(", ") { network ->
+            "${network.label.lowercase()} ${formatCount(AssumeUtxo.latest(network).height)}"
+        }
     }
 
     Column(
@@ -200,7 +209,10 @@ fun SyncScreen(
             }
             SpacerH(12)
             Muted(
-                "The file must come from the same network. On mainnet a snapshot can only be loaded " +
+                "The file must come from the same network, and a file made by another phone has to be " +
+                    "one of Core's official checkpoints ($checkpoints): loadtxoutset compares the file " +
+                    "with the checkpoints built into the daemon, so a dump taken at a node's own tip is " +
+                    "accepted only by the phone that made it. On mainnet a snapshot can only be loaded " +
                     "while the node is below the snapshot height.",
                 color = PocketColors.Faint
             )
@@ -250,13 +262,17 @@ private fun ExportSnapshotSection(
     onClearExport: () -> Unit
 ) {
     val export = state.snapshotExport
+    val checkpoint = AssumeUtxo.latest(state.config.network)
     SectionLabel("Export this node's snapshot")
     SpacerH(8)
     Muted(
-        "Bitcoin Core writes this node's current UTXO set to a .dat file (dumptxoutset). Another " +
-            "device - or this one after its data is deleted - can then start from LOAD SNAPSHOT " +
-            "instead of downloading every block from genesis. The snapshot is written inside the " +
-            "app first and copied to the file you pick; it never leaves the phone."
+        "Bitcoin Core writes a UTXO set to a .dat file (dumptxoutset), and the other phone starts " +
+            "from LOAD SNAPSHOT instead of downloading every block from genesis. The dump is taken at " +
+            "the newest official checkpoint of ${state.config.network.label} " +
+            "(block ${formatCount(checkpoint.height)}), because loadtxoutset accepts only the " +
+            "checkpoints compiled into Core: a file dumped at the tip loads on this phone alone. " +
+            "The file is written inside the app first and copied to the one you pick; it never " +
+            "leaves the phone except through that file."
     )
     SpacerH(10)
     ActionButton(
@@ -299,6 +315,22 @@ private fun ExportSnapshotSection(
         if (dump.baseHash.isNotEmpty()) {
             SpacerH(6)
             Muted("Base block ${shortHash(dump.baseHash)}", color = PocketColors.Faint)
+        }
+        export.checkpoint?.let { verifiedAgainst ->
+            SpacerH(8)
+            if (export.checkpointVerified == true) {
+                NoteBanner(
+                    "Official checkpoint ${formatCount(verifiedAgainst.height)}: the UTXO set hash " +
+                        "matches the value Core carries, so another phone with PocketCore can LOAD this file.",
+                    PocketColors.Running
+                )
+            } else {
+                NoteBanner(
+                    "The dump does not match the official checkpoint ${formatCount(verifiedAgainst.height)}. " +
+                        "Another phone's LOAD SNAPSHOT will reject it; this file only loads on this phone.",
+                    PocketColors.Warning
+                )
+            }
         }
         SpacerH(8)
         ActionButton("CLEAR EXPORT", onClick = onClearExport, modifier = Modifier.fillMaxWidth())

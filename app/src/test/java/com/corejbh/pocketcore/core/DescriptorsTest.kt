@@ -25,6 +25,18 @@ class DescriptorsTest {
     private val xpubOfZpub =
         "xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V"
 
+    // Valid extended public keys whose Base58 payload carries the letters of a
+    // private-key marker: "XPRV" in an xpub, and lowercase "xprv" in another
+    // xpub and in a zpub. Base58 is case-sensitive, so these are ordinary public
+    // keys; a lowercase() of the whole input read them as xprv and refused them
+    // (versionCode 20).
+    private val xpubCarryingUpperXprv =
+        "xpubD6gtfny2xUd6M118wSDBAUQWUAfnZbWbdgg5jkGR5rcpmqWEN5D1NafUfCnd4Bk6aBqjjVKYxc7GFWacb1Yj6bVqRvXPRVrHKFBRmjL9MCF"
+    private val xpubCarryingLowerXprv =
+        "xpub8anLLiMydHLqnV3LqbXeNHXAscZyX5VZCqf2ZA4psFb6PXZYf6ajeUtLwC4R7xprvr61US1rekbTLbpPWwyg7Y2xAcEaMzdfN8TnrdJrNe4"
+    private val zpubCarryingLowerXprv =
+        "zpubA98n8LsAvVVX6To7VLm45TYRX8Nz4ZRMwGAB43cMNTy6UoEEgMwDN6v7BDTjorA4eo1DoMsMGcBNaoh1w8wFzxprvRYdawt1mhQzfdra744"
+
     @Test
     fun acceptsFullDescriptors() {
         listOf(
@@ -178,9 +190,45 @@ class DescriptorsTest {
         assertTrue(Descriptors.parse(xpub) is Descriptors.Parsed.Valid)
     }
 
+    /**
+     * Regression (versionCode 20): the marker search is case-sensitive and
+     * anchored on a token. A public key whose Base58 happens to carry "XPRV", or
+     * a lowercase "xprv", is still a public key.
+     */
     @Test
-    fun refusesNonsense() {
-        assertTrue(Descriptors.parse("") is Descriptors.Parsed.Invalid)
+    fun acceptsPublicKeysThatCarryTheLettersOfAPrivateMarker() {
+        listOf(xpubCarryingUpperXprv, xpubCarryingLowerXprv, zpubCarryingLowerXprv).forEach { key ->
+            val parsed = Descriptors.parse(key)
+            assertTrue("should accept $key", parsed is Descriptors.Parsed.Valid)
+        }
+    }
+
+    @Test
+    fun acceptsADescriptorThatCarriesTheLettersOfAPrivateMarker() {
+        val parsed = Descriptors.parse("wpkh($xpubCarryingUpperXprv/0/*)")
+        assertTrue(parsed is Descriptors.Parsed.Valid)
+        assertEquals(
+            "wpkh($xpubCarryingUpperXprv/0/*)",
+            (parsed as Descriptors.Parsed.Valid).descriptor
+        )
+    }
+
+    /** The keys that really are private are still refused, by prefix and by version. */
+    @Test
+    fun stillRefusesRealExtendedPrivateKeys() {
+        listOf(
+            "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi",
+            "zprvAWgYBBk7JR8Gjrh4UJQ2uJdG1r3WNRRfURiABbeCDhvwA5x1oN4uT2v1Z6W8UeYhqWH6Dy1rZ7Jw5Z8vWbY3FZcY5N9w8Lk5P5kRqT3F3kU",
+            "wpkh(zprvAWgYBBk7JR8Gjrh4UJQ2uJdG1r3WNRRfURiABbeCDhvwA5x1oN4uT2v1Z6W8UeYhqWH6Dy1rZ7Jw5Z8vWbY3FZcY5N9w8Lk5P5kRqT3F3kU/0/*)"
+        ).forEach { input ->
+            val parsed = Descriptors.parse(input)
+            assertTrue("should refuse $input", parsed is Descriptors.Parsed.Invalid)
+            assertTrue((parsed as Descriptors.Parsed.Invalid).reason.contains("private key", true))
+        }
+    }
+
+    @Test
+    fun refusesNonsense() {        assertTrue(Descriptors.parse("") is Descriptors.Parsed.Invalid)
         assertTrue(Descriptors.parse("hello world") is Descriptors.Parsed.Invalid)
         assertTrue(Descriptors.parse("wpkh($xpub/0/*") is Descriptors.Parsed.Invalid)
         val message = (Descriptors.parse("bc1qxyz") as Descriptors.Parsed.Invalid).reason

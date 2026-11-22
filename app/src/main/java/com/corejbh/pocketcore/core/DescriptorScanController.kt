@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,6 +45,42 @@ internal fun abortedScanState(current: DescriptorState): DescriptorState = curre
     progress = 0.0,
     error = if (current.busy) "Scan cancelled." else current.error
 )
+
+/**
+ * The steps of ABORT, in the order they have to run.
+ *
+ * The scan job is cancelled *before* the daemon is asked to abort: scanAbort()
+ * makes the running scantxoutset return at once - with an error, not a result -
+ * and a scan job still alive would write that error over the state this abort
+ * publishes. The cancelled state is published before the request goes out, so
+ * the card stops reporting a scan even while the daemon takes its time
+ * answering, or does not answer at all (versionCode 20).
+ */
+internal suspend fun abortInOrder(
+    cancelScan: () -> Unit,
+    publishCancelled: () -> Unit,
+    askDaemon: suspend () -> Unit
+) {
+    cancelScan()
+    publishCancelled()
+    askDaemon()
+}
+
+/**
+ * The answer of a blocking daemon call, handed back only while the job that made
+ * it is still wanted.
+ *
+ * `scantxoutset` is one long HTTP request: cancelling the scan marks the job
+ * cancelled but does not interrupt the call, so a scan the user cancelled (or
+ * replaced with a new one) still gets its reply. The check after the call turns
+ * that reply into the cancellation the job already carries, instead of letting
+ * it be written over the state ABORT published (versionCode 20).
+ */
+internal suspend fun <T> answerIfStillWanted(block: suspend () -> T): T {
+    val answer = block()
+    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+    return answer
+}
 
 /**
  * Watch-only balance scanning without a wallet.
@@ -113,7 +150,11 @@ object DescriptorScanController {
                 _state.update { it.copy(normalized = info.descriptor) }
                 NodeController.settings.setDescriptor(input.trim(), info.descriptor)
                 startProgressPolling(client)
-                val json = client.scanTxOutSet(info.descriptor, info.isRange)
+                // The reply is published only if this job is still wanted: a
+                // cancel that arrived while the daemon was walking the UTXO set
+                // is not interruptible, and the answer would otherwise land on
+                // top of the state ABORT already published (versionCode 20).
+                val json = answerIfStillWanted { client.scanTxOutSet(info.descriptor, info.isRange) }
                 val result = ScanResult.from(json)
                 pollJob?.cancel()
                 _state.update {
@@ -158,17 +199,20 @@ object DescriptorScanController {
     }
 
     fun abort() {
-        // The daemon is asked to abort only when a client exists, but the state
-        // is reset either way: with the node stopped there is nothing left to
-        // ask, and the card still has to stop reporting a scan ([abortedScanState]).
         val client = NodeController.client()
         scope.launch {
-            if (client != null) runCatching { client.scanAbort() }
-            pollJob?.cancel()
-            pollJob = null
-            scanJob?.cancel()
-            scanJob = null
-            _state.update { abortedScanState(it) }
+            abortInOrder(
+                cancelScan = {
+                    pollJob?.cancel()
+                    pollJob = null
+                    scanJob?.cancel()
+                    scanJob = null
+                },
+                publishCancelled = { _state.update { abortedScanState(it) } },
+                // The daemon is asked only when a client exists; the state is
+                // reset either way (see [abortedScanState]).
+                askDaemon = { if (client != null) runCatching { client.scanAbort() } }
+            )
         }
     }
 

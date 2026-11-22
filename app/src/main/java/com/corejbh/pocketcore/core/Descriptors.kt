@@ -23,6 +23,22 @@ object Descriptors {
     )
 
     /**
+     * Version bytes of the extended private keys a marker stands for.
+     *
+     * A Base58Check decode is what decides this, not the letters: a key written
+     * with a prefix the list above does not carry is still refused when its
+     * version bytes say private (versionCode 20).
+     */
+    private val PRIVATE_VERSION_BYTES = mapOf(
+        "0488ade4" to "xprv",
+        "04358394" to "tprv",
+        "044a4e28" to "uprv",
+        "045f18bc" to "vprv",
+        "049d7878" to "yprv",
+        "04b2430c" to "zprv"
+    )
+
+    /**
      * Base58 version prefixes Core's descriptor language accepts.
      *
      * A zpub, ypub, vpub or upub is the same BIP32 key as an xpub or tpub with
@@ -66,7 +82,7 @@ object Descriptors {
         val text = raw.filterNot { it.isWhitespace() }
         if (text.isEmpty()) return Parsed.Invalid("Paste a descriptor or an extended public key first.")
         val lowered = text.lowercase()
-        privateKeyMarkers.firstOrNull { lowered.contains(it) }?.let { marker ->
+        privateKeyIn(text)?.let { marker ->
             return Parsed.Invalid(
                 "This contains a private key ($marker). PocketCore is watch-only: remove the key and " +
                     "use the matching xpub/zpub/ypub instead."
@@ -77,9 +93,6 @@ object Descriptors {
                 "That contains a WIF private key. Never paste it anywhere: PocketCore only needs a " +
                     "public descriptor or an extended public key."
             )
-        }
-        if (privateKeyMarkers.any { lowered.startsWith(it) }) {
-            return Parsed.Invalid("Extended private keys are not accepted. Use the matching xpub/zpub/ypub.")
         }
         if (bareKeyPattern.matches(text)) {
             return wrapBareKey(text)
@@ -164,6 +177,45 @@ object Descriptors {
     /** The first token of [text] that is a WIF private key, or null. */
     private fun wifToken(text: String): String? =
         text.split(descriptorTokens).firstOrNull { wifPattern.matches(it) }
+
+    /**
+     * The private key marker found in [text], or null when it holds none.
+     *
+     * The search is case-sensitive and anchored on a token, because Base58 is
+     * case-sensitive: the letters of "xprv" or "zprv" can sit inside a
+     * perfectly good xpub or zpub - as "XPRV", or in lowercase by chance - and
+     * lowercasing the whole input before looking for the marker refused valid
+     * public keys (versionCode 20). A key that really is private is still
+     * refused however it was written: by the marker at the start of its token,
+     * and by the version bytes a Base58Check decode of an extended key reveals.
+     */
+    private fun privateKeyIn(text: String): String? {
+        for (token in text.split(descriptorTokens)) {
+            privateKeyMarkers.firstOrNull { token.startsWith(it) }?.let { return it }
+            val version = extendedKeyVersion(token) ?: continue
+            PRIVATE_VERSION_BYTES[version]?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * The four version bytes of an extended key, as lowercase hex, or null when
+     * [token] is not a Base58Check extended key.
+     */
+    private fun extendedKeyVersion(token: String): String? {
+        // Shorter than any extended key: there is nothing here to decode.
+        if (token.length < 100) return null
+        val payload = AddressCodec.base58CheckPayload(token) ?: return null
+        if (payload.size != EXTENDED_KEY_BYTES) return null
+        val hex = StringBuilder(8)
+        for (index in 0 until 4) {
+            val value = payload[index].toInt() and 0xFF
+            hex.append(HEX[value ushr 4]).append(HEX[value and 0x0F])
+        }
+        return hex.toString()
+    }
+
+    private const val HEX = "0123456789abcdef"
 
     /**
      * A bare extended public key has no script type of its own. The usual

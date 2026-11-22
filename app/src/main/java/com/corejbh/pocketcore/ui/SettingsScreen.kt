@@ -81,9 +81,9 @@ fun SettingsScreen(
         dataSize = measured.first
         freeBytes = measured.second
     }
-    LaunchedEffect(config.descriptorInput, config.descriptorNormalized) {
-        DescriptorScanController.loadSaved(config.descriptorInput, config.descriptorNormalized)
-    }
+    // The saved descriptor is loaded once, by NodeController.startup: loading it
+    // from here re-ran every time this tab was opened, and a descriptor the user
+    // had just cleared came back into the field (versionCode 20).
 
     Column(
         Modifier

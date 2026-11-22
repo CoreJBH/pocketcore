@@ -2,8 +2,12 @@ package com.corejbh.pocketcore.core
 
 import android.annotation.SuppressLint
 import android.content.Context
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.security.SecureRandom
 
 /** The three Bitcoin networks a node can run on. */
@@ -65,11 +69,13 @@ data class NodeSettingsState(
  * `Dispatchers.IO` and holds every action that depends on the settings until it
  * has finished, so no start can be built from the defaults.
  *
- * The setters, [setDescriptor] and [rotateCredentials] are `@Synchronized`: the
- * start path rotates the credentials while the UI can be saving a descriptor,
- * and both end with `_state.value = read()`, so two unlocked writers would
- * publish a state built from a half-applied pair of values. They are short
- * preference writes; one lock on this object is enough.
+ * The setters, [setDescriptor] and [rotateCredentials] are `suspend`: every one
+ * of them ends in a preference write and a republished state, and both belong on
+ * `Dispatchers.IO`. They used to be plain functions called from the Compose
+ * callbacks, which ran `commit()` - a synchronous disk write - on the frame that
+ * drew the switch the user had just flipped (versionCode 20). [writeLock]
+ * serializes them, so the start path's [rotateCredentials] and the UI's save of
+ * a descriptor cannot publish a state built from a half-applied pair of values.
  *
  * Every write is [SharedPreferences.Editor.commit]. These values decide what the
  * next start runs and what the running daemon authenticates with, so a write
@@ -85,6 +91,9 @@ class NodeSettings(context: Context) {
     private val _state = MutableStateFlow(NodeSettingsState())
     val state: StateFlow<NodeSettingsState> = _state
 
+    /** One write at a time, so the state is never built from a mixed edit. */
+    private val writeLock = Mutex()
+
     /**
      * True once [load] has read what this process has stored.
      *
@@ -99,18 +108,20 @@ class NodeSettings(context: Context) {
      * Reads the stored settings and publishes them. Runs off the main thread
      * (`Dispatchers.IO`) from [NodeController.init].
      */
-    @Synchronized
-    fun load() {
-        _state.value = read()
-        loaded = true
+    suspend fun load() {
+        writeLock.withLock {
+            withContext(Dispatchers.IO) { _state.value = read() }
+            loaded = true
+        }
     }
 
+    /**
+     * The stored state. Only called on `Dispatchers.IO` ([load] and [edit]): it
+     * reads a preference file and, for the secrets, the Keystore.
+     */
     private fun read(): NodeSettingsState {
         val user = prefs.getString(KEY_RPC_USER, null) ?: generateToken(16).also {
             prefs.edit().putString(KEY_RPC_USER, it).commit()
-        }
-        val password = secrets.read(KEY_RPC_PASSWORD) ?: generateToken(32).also {
-            secrets.write(KEY_RPC_PASSWORD, it)
         }
         return NodeSettingsState(
             network = BitcoinNetwork.fromName(prefs.getString(KEY_NETWORK, null)),
@@ -119,7 +130,7 @@ class NodeSettings(context: Context) {
             chargingOnly = prefs.getBoolean(KEY_CHARGING_ONLY, false),
             torProxy = prefs.getBoolean(KEY_TOR_PROXY, false),
             rpcUser = user,
-            rpcPassword = password,
+            rpcPassword = readPassword(),
             shouldRun = prefs.getBoolean(KEY_SHOULD_RUN, false),
             snapshotPath = prefs.getString(KEY_SNAPSHOT_PATH, null),
             snapshotLabel = prefs.getString(KEY_SNAPSHOT_LABEL, null),
@@ -128,19 +139,40 @@ class NodeSettings(context: Context) {
         )
     }
 
-    fun setNetwork(network: BitcoinNetwork) = edit { putString(KEY_NETWORK, network.name) }
+    /**
+     * The RPC password, generated only when nothing is stored yet.
+     *
+     * A password is generated for a fresh install and never because a read
+     * failed: an entry that exists but cannot be opened right now (a Keystore
+     * that did not answer) used to be replaced by a newly generated value and
+     * written over it, which changed the pair a running daemon authenticates
+     * with while the ciphertext that would have decrypted was still there. The
+     * stored entry decides, and the empty answer it gives until the next read
+     * succeeds is a value nothing sends: a start rotates the pair before it
+     * writes the conf, and the orphan stop skips a blank password
+     * (versionCode 20).
+     */
+    private fun readPassword(): String {
+        secrets.read(KEY_RPC_PASSWORD)?.let { return it }
+        // A value from a build before versionCode 9 is plaintext, and its entry
+        // is not the encrypted one: only a store with neither has no password.
+        if (prefs.contains(KEY_RPC_PASSWORD_ENCRYPTED) || prefs.contains(KEY_RPC_PASSWORD)) return ""
+        return generateToken(32).also { secrets.write(KEY_RPC_PASSWORD, it) }
+    }
 
-    fun setPruneMb(value: Int) = edit { putInt(KEY_PRUNE, value) }
+    suspend fun setNetwork(network: BitcoinNetwork) = edit { putString(KEY_NETWORK, network.name) }
 
-    fun setWifiOnly(value: Boolean) = edit { putBoolean(KEY_WIFI_ONLY, value) }
+    suspend fun setPruneMb(value: Int) = edit { putInt(KEY_PRUNE, value) }
 
-    fun setChargingOnly(value: Boolean) = edit { putBoolean(KEY_CHARGING_ONLY, value) }
+    suspend fun setWifiOnly(value: Boolean) = edit { putBoolean(KEY_WIFI_ONLY, value) }
 
-    fun setTorProxy(value: Boolean) = edit { putBoolean(KEY_TOR_PROXY, value) }
+    suspend fun setChargingOnly(value: Boolean) = edit { putBoolean(KEY_CHARGING_ONLY, value) }
 
-    fun setShouldRun(value: Boolean) = edit { putBoolean(KEY_SHOULD_RUN, value) }
+    suspend fun setTorProxy(value: Boolean) = edit { putBoolean(KEY_TOR_PROXY, value) }
 
-    fun setSnapshot(path: String?, label: String?) = edit {
+    suspend fun setShouldRun(value: Boolean) = edit { putBoolean(KEY_SHOULD_RUN, value) }
+
+    suspend fun setSnapshot(path: String?, label: String?) = edit {
         putString(KEY_SNAPSHOT_PATH, path)
         putString(KEY_SNAPSHOT_LABEL, label)
     }
@@ -153,32 +185,43 @@ class NodeSettings(context: Context) {
      * A blank value is removed rather than stored, and the plaintext keys of
      * earlier builds are dropped by [SecretStore.write] on the first save.
      */
-    @Synchronized
-    fun setDescriptor(input: String, normalized: String?) {
-        if (input.isBlank()) secrets.remove(KEY_DESCRIPTOR_INPUT) else secrets.write(KEY_DESCRIPTOR_INPUT, input)
-        if (normalized.isNullOrBlank()) {
-            secrets.remove(KEY_DESCRIPTOR_NORMALIZED)
-        } else {
-            secrets.write(KEY_DESCRIPTOR_NORMALIZED, normalized)
+    suspend fun setDescriptor(input: String, normalized: String?) = writeLock.withLock {
+        withContext(Dispatchers.IO) {
+            if (input.isBlank()) {
+                secrets.remove(KEY_DESCRIPTOR_INPUT)
+            } else {
+                secrets.write(KEY_DESCRIPTOR_INPUT, input)
+            }
+            if (normalized.isNullOrBlank()) {
+                secrets.remove(KEY_DESCRIPTOR_NORMALIZED)
+            } else {
+                secrets.write(KEY_DESCRIPTOR_NORMALIZED, normalized)
+            }
+            // Nothing is left for the plain keys of builds before versionCode 13.
+            prefs.edit().remove(KEY_DESCRIPTOR_INPUT).remove(KEY_DESCRIPTOR_NORMALIZED).commit()
+            _state.value = read()
         }
-        // Nothing is left for the plain keys of builds before versionCode 13.
-        prefs.edit().remove(KEY_DESCRIPTOR_INPUT).remove(KEY_DESCRIPTOR_NORMALIZED).commit()
-        _state.value = read()
+        Unit
     }
 
     /** A new credential pair, used when an RPC port had to be left to another app. */
-    @Synchronized
-    fun rotateCredentials() {
-        prefs.edit().putString(KEY_RPC_USER, generateToken(16)).commit()
-        secrets.write(KEY_RPC_PASSWORD, generateToken(32))
-        _state.value = read()
+    suspend fun rotateCredentials() = writeLock.withLock {
+        withContext(Dispatchers.IO) {
+            prefs.edit().putString(KEY_RPC_USER, generateToken(16)).commit()
+            secrets.write(KEY_RPC_PASSWORD, generateToken(32))
+            _state.value = read()
+        }
+        Unit
     }
 
     /** Applies one settings change and republishes the whole state. */
-    @Synchronized
-    private fun edit(change: android.content.SharedPreferences.Editor.() -> Unit) {
-        prefs.edit().apply(change).commit()
-        _state.value = read()
+    private suspend fun edit(change: android.content.SharedPreferences.Editor.() -> Unit) {
+        writeLock.withLock {
+            withContext(Dispatchers.IO) {
+                prefs.edit().apply(change).commit()
+                _state.value = read()
+            }
+        }
     }
 
     companion object {
@@ -190,6 +233,9 @@ class NodeSettings(context: Context) {
         private const val KEY_TOR_PROXY = "tor_proxy"
         private const val KEY_RPC_USER = "rpc_user"
         private const val KEY_RPC_PASSWORD = "rpc_password"
+
+        /** The name [SecretStore] writes the encrypted password under. */
+        private const val KEY_RPC_PASSWORD_ENCRYPTED = "rpc_password_enc"
         private const val KEY_SHOULD_RUN = "should_run"
         private const val KEY_SNAPSHOT_PATH = "snapshot_path"
         private const val KEY_SNAPSHOT_LABEL = "snapshot_label"

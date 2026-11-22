@@ -36,11 +36,20 @@ object NodePaths {
     fun binaryVersionStamp(context: Context): File = File(root(context), "binary-version.txt")
 
     /**
-     * Records the SHA-256 verdict on [processBinaryPath] for one build, so the
-     * extracted daemon is hashed once per install and version rather than on
-     * every start.
+     * Snapshot files in [dir] that [keep] does not name - the ones a new import
+     * replaces, and the `.part` copy a killed import left behind.
+     *
+     * A snapshot is gigabytes, so keeping every file ever imported fills the
+     * volume for data nothing points at. Only the file in use survives, and the
+     * decision is pure so the selection is unit tested.
      */
-    fun binaryIntegrityStamp(context: Context): File = File(root(context), "binary-integrity.txt")
+    fun staleSnapshotFiles(dir: File, keep: File?): List<File> {
+        val children = dir.listFiles() ?: return emptyList()
+        return children.filter { file ->
+            val snapshot = file.name.endsWith(".dat") || file.name.endsWith(".dat.part")
+            snapshot && file.isFile && file.absolutePath != keep?.absolutePath
+        }
+    }
 
     /**
      * The directory that holds one network's chain data.

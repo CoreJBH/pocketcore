@@ -3,6 +3,7 @@ package com.corejbh.pocketcore.core
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -181,8 +182,7 @@ class PortResolverTest {
     }
 
     @Test
-    fun anRpcPortTakenByTheP2pListenerIsMovedWithoutRotating() {
-        // A defensive branch: the listen-pair search is given the RPC port as an
+    fun anRpcPortTakenByTheP2pListenerIsMovedWithoutRotating() {        // A defensive branch: the listen-pair search is given the RPC port as an
         // avoided port, so this only happens if a device ever reports one as
         // free and then hands it to the P2P listener. The RPC port then moves and
         // stays a port of our own node, so the credentials are not replaced.
@@ -199,5 +199,49 @@ class PortResolverTest {
         assertEquals(defaultRpc + 1, choice.rpc)
         assertTrue(choice.note!!.contains("collides with the P2P listener"))
         assertFalse(choice.rotateCredentials)
+    }
+
+    /**
+     * No free RPC port in the window: the start is reported as a failure with a
+     * reason, instead of being launched on the busy port the search began from
+     * (versionCode 20).
+     */
+    @Test
+    fun reportsWhenNoFreeRpcPortExists() {
+        val resolver = PortResolver(
+            isFree = { port -> port != defaultRpc },
+            findFree = { _, _ -> null },
+            findFreeListenPair = { preferred, _ -> preferred },
+            awaitFree = { _, _ -> true }
+        )
+        val choice = runBlocking {
+            resolver.resolve(defaultRpc, defaultP2p, null, { true }, {})
+        }
+        assertNotNull(choice.error)
+        assertTrue(choice.error!!.contains("No free RPC port"))
+        assertEquals(defaultRpc, choice.rpc)
+        assertFalse("a pair that was never handed out is not rotated", choice.rotateCredentials)
+    }
+
+    /**
+     * A P2P listen port with no free pair in the window is not fatal: the node
+     * starts on the default port and the note says why inbound peers are missing,
+     * instead of naming a port the daemon never binds (versionCode 20).
+     */
+    @Test
+    fun keepsTheDefaultP2pPortWhenNoFreePairExists() {
+        val resolver = PortResolver(
+            isFree = { port -> port != defaultP2p && port != defaultP2p + 1 },
+            findFree = { preferred, _ -> preferred },
+            findFreeListenPair = { _, _ -> null },
+            awaitFree = { _, _ -> true }
+        )
+        val choice = runBlocking {
+            resolver.resolve(defaultRpc, defaultP2p, null, { true }, {})
+        }
+        assertNull(choice.error)
+        assertEquals(defaultP2p, choice.p2p)
+        assertEquals(defaultRpc, choice.rpc)
+        assertTrue(choice.note!!.contains("without inbound peers"))
     }
 }

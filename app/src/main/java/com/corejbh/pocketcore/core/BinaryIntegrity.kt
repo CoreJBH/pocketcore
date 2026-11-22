@@ -9,17 +9,19 @@ import java.security.MessageDigest
  * `libbitcoind.so` is the one file this app executes, and it is executed as the
  * app's own UID with access to the datadir. The APK carries the hash it was
  * built with (see `BuildConfig.BITCOIND_SHA256`, computed by Gradle from
- * `jniLibs/arm64-v8a/libbitcoind.so`), so the extracted copy is hashed once per
- * build before it is ever run: a binary that was replaced, truncated or only
+ * `jniLibs/arm64-v8a/libbitcoind.so`), so the extracted copy is hashed against
+ * it before it is ever run: a binary that was replaced, truncated or only
  * partly extracted at install time is refused instead of started.
  *
- * The answer is cached in a stamp file for the current build, because the file
- * does not change between starts of one installed build, and a 10.7 MB hash on
- * every start is unnecessary. The stamp records the build tag and the expected
- * hash, so a new build (a new versionCode, or a new daemon in the same one) can
- * never read an older build's verdict.
+ * The file is hashed again at every check, never answered from a stamp on disk.
+ * A stamp records what one run of the app saw, and the next cold start - the one
+ * that follows an update, a re-extraction or a file replaced while the device sat
+ * idle - read that verdict instead of looking at the file it was about: the stamp
+ * was the one place the check could be satisfied without the file matching it
+ * (versionCode 20). A 10.7 MB hash takes well under a second and happens once
+ * per start, not per poll.
  *
- * Plain Kotlin over [File], so both hashing and the cache are unit tested.
+ * Plain Kotlin over [File], so hashing is unit tested.
  */
 object BinaryIntegrity {
 
@@ -44,31 +46,14 @@ object BinaryIntegrity {
     /**
      * True when [file] hashes to [expectedSha256].
      *
-     * A stamp in [stampFile] that already records this [buildTag] and hash is
-     * taken as the answer without hashing again. [expectedSha256] is compared in
-     * lowercase, so a hash written in either case verifies.
+     * [expectedSha256] is compared in lowercase, so a hash written in either
+     * case verifies. Nothing is cached: the answer is always this file's.
      */
-    fun verify(file: File, expectedSha256: String, stampFile: File?, buildTag: String): Boolean {
+    fun verify(file: File, expectedSha256: String): Boolean {
         val expected = expectedSha256.trim().lowercase()
         if (!isDigest(expected)) return false
         if (!file.isFile) return false
-        if (stampFile != null && stampMatches(stampFile, buildTag, expected)) return true
-        val actual = sha256(file) ?: return false
-        if (actual != expected) return false
-        if (stampFile != null) {
-            runCatching {
-                stampFile.parentFile?.mkdirs()
-                stampFile.writeText("$buildTag $expected\n")
-            }
-        }
-        return true
-    }
-
-    /** True when [stampFile] records a verdict for exactly this build and hash. */
-    fun stampMatches(stampFile: File, buildTag: String, expectedSha256: String): Boolean {
-        if (!stampFile.isFile) return false
-        val text = runCatching { stampFile.readText().trim() }.getOrNull() ?: return false
-        return text == "$buildTag ${expectedSha256.lowercase()}"
+        return sha256(file) == expected
     }
 
     private fun ByteArray.toHex(): String {
