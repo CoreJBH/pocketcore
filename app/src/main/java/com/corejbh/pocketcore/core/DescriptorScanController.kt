@@ -119,22 +119,24 @@ object DescriptorScanController {
             return
         }
         val valid = parsed as Descriptors.Parsed.Valid
-        // `scantxoutset` walks the chainstate for as long as it takes, and it is one
-        // of the requests the sensitive gate covers: the node has to be running, its
-        // listener proved again now, the user still asking for it to run and no start
-        // or stop since this decision (versionCode 21).
-        val open = NodeController.openSensitiveRpc()
-        val call = open.call
-        if (call == null) {
-            _state.update {
-                it.copy(error = open.refusal ?: "The node is not ready for a scan.")
-            }
-            return
-        }
-        val client = call.client
         scanJob?.cancel()
         pollJob?.cancel()
         scanJob = scope.launch {
+            // `scantxoutset` walks the chainstate for as long as it takes, and it is one
+            // of the requests the sensitive gate covers: the node has to be running, its
+            // listener proved again now, the user still asking for it to run and no start
+            // or stop since this decision (versionCode 21). The gate reads /proc and the
+            // daemon's log, so it runs here on the IO dispatcher and not on the frame
+            // that runs the SCAN button.
+            val open = NodeController.openSensitiveRpc()
+            val call = open.call
+            if (call == null) {
+                _state.update {
+                    it.copy(busy = false, error = open.refusal ?: "The node is not ready for a scan.")
+                }
+                return@launch
+            }
+            val client = call.client
             _state.update {
                 it.copy(
                     busy = true,

@@ -14,7 +14,7 @@ ends with the versionCode 21 build recorded under versionCode 20.
 | --- | --- |
 | Package | `com.corejbh.pocketcore` |
 | Version | 1.0.0 (versionCode 21) |
-| Release APK | `pocketcore-1.0.0-release-v21.apk`, 8,499,175 bytes, SHA-256 `f077100aaf7103cba6bad1e2a79c352419525485ba17be1d46c0b95f91fac54d` |
+| Release APK | `pocketcore-1.0.0-release-v21.apk`, 8,499,267 bytes, SHA-256 `09cd37caafa58bbd3ba65d597b1e3a1d0df485d34dfccb3ce8b987bbecfaf003` |
 | Signing | `keystore/pocketcore-release.jks`, alias `pocketcore`; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` (unchanged; `apksigner verify` reports DN `CN=CoreJBH, OU=POCKETCORE, O=CoreJBH, L=Gumi, ST=Gyeongsangbuk-do, C=KR`) |
 | Daemon in the APK | `lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
 | Lint | 0 errors, 16 warnings, 3 information in `lintDebug` and in `lintRelease` (`abortOnError = true`) |

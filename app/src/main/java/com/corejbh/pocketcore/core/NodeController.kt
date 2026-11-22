@@ -896,6 +896,9 @@ object NodeController {
     /** Suffix of a snapshot still being copied. */
     private const val PART_SUFFIX = ".part"
 
+    /** The smallest file that could be a snapshot at all (the header is 51 bytes). */
+    private const val MIN_SNAPSHOT_BYTES = 1024L
+
     private suspend fun fail(message: String) {
         Log.e(TAG, message)
         pollJob?.cancel()
@@ -1353,6 +1356,14 @@ object NodeController {
                         val copied = partial.inputStream().use { SnapshotHeader.read(it) }
                         SnapshotHeader.problem(copied, network)?.let {
                             throw IllegalStateException("The copied file is not the chosen snapshot: $it")
+                        }
+                        // The header alone is 51 bytes; a real snapshot is hundreds of
+                        // megabytes. The floor is kept for a file whose header survived a
+                        // truncated copy.
+                        if (partial.length() < MIN_SNAPSHOT_BYTES) {
+                            throw IllegalStateException(
+                                "That file is too small to be a UTXO snapshot: ${partial.length()} bytes."
+                            )
                         }
                         if (!partial.renameTo(target)) {
                             throw IllegalStateException("The snapshot could not be moved into place.")

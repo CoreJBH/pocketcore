@@ -303,9 +303,9 @@ cannot change what runs. GitHub only lets a token with the `workflows` scope
 add a file under `.github/workflows/`, so the repository keeps it in `docs/ci/`
 and the owner installs it there once.
 
-The current release APK is `pocketcore-1.0.0-release-v21.apk`, 8,499,175 bytes
+The current release APK is `pocketcore-1.0.0-release-v21.apk`, 8,499,267 bytes
 with SHA-256
-`f077100aaf7103cba6bad1e2a79c352419525485ba17be1d46c0b95f91fac54d`; the full
+`09cd37caafa58bbd3ba65d597b1e3a1d0df485d34dfccb3ce8b987bbecfaf003`; the full
 build record, including the bundled daemon's own hash, is in
 [docs/BUILD-RECORD.md](docs/BUILD-RECORD.md) and can be reproduced from the
 source with `./gradlew :app:assembleRelease`.
