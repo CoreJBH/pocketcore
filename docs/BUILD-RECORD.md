@@ -2,6 +2,85 @@
 
 Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 9).
 
+## versionCode 19 — ninth review
+
+Built on 2026-11-22 from `main` at `9e13c08`. Four review findings, all in the
+app: the daemon is unchanged, byte for byte.
+
+| Item | Value |
+| --- | --- |
+| Package | `com.corejbh.pocketcore` |
+| Version | 1.0.0 (versionCode 19) |
+| Release APK | `app-release.apk`, 8,487,559 bytes, SHA-256 `69ff4838fbe2535ab0f179cc0e586b44b24c793d6fd83212e7170c51f05a05a9` |
+| Debug APK | `app-debug.apk`, 17,131,426 bytes, SHA-256 `cfdb987d00a3662e86970b03539de7bf3a70e9d9d0aa4bfe94143d6ed4319844` |
+| Signing (release) | `keystore/pocketcore-release.jks`, alias `pocketcore`; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` (unchanged) |
+| Daemon in the APK | `lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
+| Lint | 0 errors; 16 warnings in `lintDebug`, 16 in `lintRelease` (`abortOnError = true`) |
+| Unit tests | 243 passing in `testDebugUnitTest` (225 before this build) |
+| zipalign | `zipalign -c -p 4` passes for both APKs |
+| In-place upgrade build | `com.jbitmstr.pocketcore`, versionCode 20, 17,131,074 bytes, SHA-256 `2c2a461f4d227a6c947a0f28dd14a2a418247486b86444a746bcc9715ce2b1cf`, debug key `F5:07:48:15:C3:5C:6B:87:B2:5C:39:32:DF:22:83:48:86:8A:CB:B3:18:70:E2:01:18:35:66:EA:2A:A9:C0:11` (the key of versionCode 9-18) |
+
+The release checklist was `:app:testDebugUnitTest :app:lintDebug :app:lintRelease
+:app:assembleDebug :app:assembleRelease`, all green. As in the previous build,
+the upgrade APK is built in a tree outside the repository (`git archive` of
+`HEAD`, then the `applicationId` and `versionCode` patched in that copy), so
+`com.jbitmstr` and versionCode 20 are never part of this repository's tree.
+
+### The four findings
+
+**The version lookup ran the daemon before checking it.** `start()` has gone
+through `prepareBinary()` - existence, the 1 MB floor, the APK's own SHA-256 and
+the executable bit - since versionCode 12, but `version()` executed the same
+extracted `libbitcoind.so` with `-version` on every app start without asking
+anything. A file replaced in `nativeLibraryDir` (the one place an app may run
+its own native code, and the reason the checksum exists) was refused a start and
+executed anyway, once per launch, from the startup path that then reports the
+node ready. The lookup now lives in `BinaryVersion`, which calls `prepareBinary`
+first and returns no version at all when it reports a problem - nothing is
+executed, and the start path shows the same message it would have shown for a
+start. The cached stamp (versionCode plus the expected hash) is still read first,
+because a cached string runs nothing; a stamp from another build or one holding
+an error line is discarded and re-probed, and the order check-then-run is unit
+tested (`BinaryVersionTest`).
+
+**One Keystore hiccup cost every secret.** `SecretStore` gives the RPC password,
+the watch-only descriptor and the scan result one AES key from the Android
+Keystore. `usableKey()` replaced that key on *any* exception from `load()`: a
+provider that failed mid-call, an I/O error, an `IllegalStateException` all
+deleted the entry and generated a new one, and everything sealed under the old
+key - three secrets that were perfectly readable - became unreadable. The
+replacement is now only for a key the Keystore reports as gone
+(`InvalidKeyException`, which includes `KeyPermanentlyInvalidatedException`, and
+`UnrecoverableKeyException`); any other failure returns null and leaves the entry
+alone, so the next call asks the same key again. A read whose ciphertext cannot
+be opened now says *why* it could not: a damaged value is dropped (as before),
+while a Keystore that did not answer leaves the ciphertext stored for the next
+attempt instead of deleting a descriptor it could not even look at. The decision
+is `KeyLadder` over an injectable `KeySource`, so transient and permanent
+failures are unit tested (`KeyLadderTest`).
+
+**Tor mode probed a P2P port it does not use.** With Tor routing on, the conf
+written for the start carries `listen=0`: the daemon binds no P2P socket at all.
+The port resolver still opened two sockets on the default P2P port and the
+loopback port one above it, and could move the pair to a "free" port the node
+would never listen on - a note on the screen about an endpoint that does not
+exist. `resolve()` takes `p2pListener`, false when `torProxy` is set, and skips
+that step entirely; the RPC endpoint, which the credentials go to, is checked
+exactly as before, and the P2P reservation is not taken either.
+
+**Every capability callback ran a policy pass.** `registerDefaultNetworkCallback`
+delivers `onCapabilitiesChanged` for signal strength, bandwidth and captive
+portal probes as well as for a transport appearing or disappearing, and each one
+refreshed the label and launched `evaluatePolicy()` - which takes the node mutex
+and can stop or start the daemon. `EnvironmentGate` admits one pass per
+distinct connectivity signature per 2 s window: the signature is built from the
+transports and validation the policy and the label actually read
+(`NetworkSignature`), so a repeat is dropped, while a real change - Wi-Fi gone -
+still passes at once, and a repeat after the window passes again so a state that
+drifted is re-read. The power receiver's broadcast and `onAvailable` / `onLost`
+pass no signature and are never dropped. The window and the signature are unit
+tested (`EnvironmentGateTest`), as is the skipped P2P probe (`PortResolverTest`).
+
 ## versionCode 18 — eighth review
 
 Built on 2026-11-22 from `main` at `3031c2d`. Three review findings, all in the
