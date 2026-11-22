@@ -133,6 +133,24 @@ class SnapshotHeaderTest {
     }
 
     @Test
+    fun theHeaderOfAPublishedMainnetSnapshotIsAccepted() {
+        // The first 51 bytes of mainnet-965000-utxos.dat (utxo.download, read
+        // 2026-11-23): magic utxo 0xFF, version 2, mainnet magic F9BEB4D9, the
+        // 965,000 block hash in Core's little-endian uint256 order and
+        // 165,734,792 coins. The hash reversed is the checkpoint AssumeUtxo
+        // carries for that height, which is what pins the field order.
+        val real = "7574786fff" + "0200" + "f9beb4d9" +
+            "a97db9900bc3cc313e07b4c9f52961e50c00e677595901000000000000000000" +
+            "88e9e00900000000"
+        val bytes = real.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        assertEquals(SnapshotHeader.LENGTH, bytes.size)
+        assertNull(SnapshotHeader.problem(bytes, BitcoinNetwork.MAINNET))
+        // The same bytes under another network's name are refused, so the network
+        // magic is really being read rather than skipped.
+        assertNotNull(SnapshotHeader.problem(bytes, BitcoinNetwork.TESTNET4))
+    }
+
+    @Test
     fun theReaderTakesWhatTheStreamGives() {
         val bytes = header()
         // A single read of a ByteArrayInputStream returns everything; a reader

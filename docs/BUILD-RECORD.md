@@ -18,7 +18,7 @@ ends with the versionCode 21 build recorded under versionCode 20.
 | Signing | `keystore/pocketcore-release.jks`, alias `pocketcore`; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` (unchanged; `apksigner verify` reports DN `CN=CoreJBH, OU=POCKETCORE, O=CoreJBH, L=Gumi, ST=Gyeongsangbuk-do, C=KR`) |
 | Daemon in the APK | `lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
 | Lint | 0 errors, 16 warnings, 3 information in `lintDebug` and in `lintRelease` (`abortOnError = true`) |
-| Unit tests | 292 passing in `testDebugUnitTest` (272 before this build) |
+| Unit tests | 293 passing in `testDebugUnitTest` (272 before this build) |
 | zipalign | `zipalign -c -p 4` passes |
 | Debug APK | none produced or published for this version |
 
@@ -62,6 +62,14 @@ network's `pchMessageStart`, the 32-byte base block hash and the 8-byte coin
 count) and refuses a wrong magic, an unsupported version, another network, a
 zero base hash or zero coins - before the copy starts, and again on the copied
 file. `loadSnapshot` checks the stored file's header before it calls the daemon.
+
+The field order is not assumed: the first 51 bytes of the published
+`mainnet-965000-utxos.dat` (utxo.download, read on 2026-11-23) are magic `utxo`
+0xFF, version 2, mainnet magic `F9BEB4D9`, a 32-byte hash that reads
+`00000000000000000001595977e6000ce56129f5c9b4073e31ccc30b90b97da9` once
+reversed - the 965,000 checkpoint `AssumeUtxo` carries - and 165,734,792 coins.
+Those bytes are a unit test (`SnapshotHeaderTest`), so the parser and the
+published file agree rather than the parser and a diagram.
 
 **The load check measured the wrong file.** `loadtxoutset` writes a second
 chainstate and keeps the existing one, and the old check compared free space with
