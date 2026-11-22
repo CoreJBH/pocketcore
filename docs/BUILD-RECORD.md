@@ -2,6 +2,92 @@
 
 Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 9).
 
+## versionCode 18 — eighth review
+
+Built on 2026-11-22 from `main` at `3031c2d`. Three review findings, all in the
+app: the daemon is unchanged, byte for byte.
+
+| Item | Value |
+| --- | --- |
+| Package | `com.corejbh.pocketcore` |
+| Version | 1.0.0 (versionCode 18) |
+| Release APK | `app-release.apk`, 8,486,335 bytes, SHA-256 `27277d0c339bfd4cd21d4d3e45d1dd9ec415b4bc75225aeea6f28f8eaa8315f6` |
+| Debug APK | `app-debug.apk`, 17,126,286 bytes, SHA-256 `de584b09e9b25eae851ca9feb39e717ad673f273a839fa3761cb41d452198ebe` |
+| Signing (release) | `keystore/pocketcore-release.jks`, alias `pocketcore`; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` (unchanged) |
+| Daemon in the APK | `lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
+| Lint | 0 errors; 11 warnings in `lintDebug`, 16 in `lintRelease` (`abortOnError = true`) |
+| Unit tests | 225 passing in `testDebugUnitTest` (205 before this build) |
+| zipalign | `zipalign -c -p 4` passes for both APKs |
+| In-place upgrade build | `com.jbitmstr.pocketcore`, versionCode 19, 17,125,814 bytes, SHA-256 `469d7cdad20a591c299d3645158b909969ffc8f0f96c5ce5bb6cfba17953c40c`, debug key `F5:07:48:15:C3:5C:6B:87:B2:5C:39:32:DF:22:83:48:86:8A:CB:B3:18:70:E2:01:18:35:66:EA:2A:A9:C0:11` (the key of versionCode 9-16) |
+
+The release checklist was `:app:testDebugUnitTest :app:lintDebug :app:lintRelease
+:app:assembleDebug :app:assembleRelease`, all green. As in the previous build,
+the upgrade APK is built in a tree outside the repository (`git archive` of
+`HEAD`, then the `applicationId` and `versionCode` patched in that copy), so
+`com.jbitmstr` and versionCode 19 are never part of this repository's tree.
+
+### The three findings
+
+**An orphan's port had no proof, and the password went out anyway.** On Android
+10 and above `/proc/<pid>/net/tcp` is unreadable, so versionCode 16's orphan stop
+fell back to three facts: a daemon of this UID is alive, the conf this app wrote
+records the port, and there is a credential. All three can hold while the port
+belongs to another app - the daemon may be alive on a port the conf no longer
+names, or a second node app may have taken it after our daemon exited - and the
+stop request is HTTP Basic Auth to that port. `OrphanStop.maySend` now also
+requires the daemon's own `debug.log` to show it binding that loopback port
+after its process started: the start time is `/proc/<pid>/stat` field 22 turned
+into wall-clock millis against the phone's uptime (`ProcScan.statStartTicks`,
+`processStartMillis`, `BitcoindNode.processStartedAt`), and the bind line has to
+be stamped at or after it. Without that proof nothing is sent: the daemon of
+this app is ended with `SIGTERM` (`BitcoindNode.terminateGracefully`), which Core
+handles as the same clean shutdown as the `stop` RPC, carries no credential, and
+can only reach a process of this app's UID running the bundled daemon.
+
+**A shrunken log could still vouch with the previous run's bind line.**
+versionCode 17 made the read start at 0 when `debug.log` was shorter than the
+start's offset, so the bind line of the current start would not be missed. The
+kept tail also holds the previous run's own `Binding RPC` line on the same port,
+though, and that line alone passed the check. The read now reports that it had to
+start at the file's beginning (`NodePaths.LogWindow.fromStartAfterShrink`), and
+`ListenerFallback.rpcBindConfirmed` takes the wall-clock start of the start being
+judged: in such a window a bind line counts only when its Core timestamp is at or
+after that start, compared at whole seconds because that is Core's stamp
+resolution. A line that cannot be dated is not evidence for a start. An ordinary
+window (read from its offset) needs no stamp check, because every line in it was
+written after the offset.
+
+**Durable writes, and startup off the main thread.** The RPC pair, the
+descriptor and the settings were written with `apply()`, which returns before the
+disk write: a start that rotated the pair and launched the daemon could be
+followed by a process death that left no password on disk for the next start to
+read the orphan with, and a settings change could be lost with the process. Both
+stores now `commit()` and say why (`@SuppressLint("ApplySharedPref")`);
+`SecretStore` also keeps what it decrypted for the life of the process, so the
+Keystore is touched once per secret rather than once per settings read.
+`NodeSettings` reads nothing in its constructor any more, and `NodeController.init`
+- called on the main thread from the activity and the service - only builds the
+objects and publishes a first state. A `startup()` coroutine on `Dispatchers.IO`
+loads the settings (Keystore), the snapshot file's size, the daemon's version and
+the peer country table, and resumes a node that was running; every action that
+reads the settings awaits `settingsReady` first, so no start is built from the
+defaults.
+
+### Also in this build
+
+`wipeNodeData()` is a snapshot operation now: it holds `SnapshotGate` before the
+node mutex, in the same order as import / export / load / clear, so a wipe cannot
+delete the chainstate a `loadtxoutset` is writing or the blocks a `dumptxoutset`
+is walking.
+
+Importing or loading a snapshot checks the free space before anything is opened
+(`StorageBudget`): the source size from the document provider (import) or the
+file's length (load) plus a 64 MB reserve has to fit in
+`NodePaths.freeSpaceBytes`, and the card names what the snapshot needs, what the
+phone has free and how much to free. An unknown free space or an unknown source
+size never blocks - a check that cannot be made is not a refusal, and the copy
+still fails cleanly on a full volume.
+
 ## versionCode 17 — seventh review
 
 Built on 2026-11-22 from `main` at `87256ad`. Three review findings, all in the
