@@ -2,6 +2,109 @@
 
 Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 9).
 
+## versionCode 21 — the completeness review
+
+Built on 2026-11-23 from `main` at `078820b`. Five findings plus two documents:
+the daemon is unchanged, byte for byte. This is the first build whose published
+artifact is **only** the release-signed `com.corejbh.pocketcore`; no debug-key
+APK is produced or distributed, and the `com.jbitmstr.pocketcore` upgrade line
+ends with the versionCode 21 build recorded under versionCode 20.
+
+| Item | Value |
+| --- | --- |
+| Package | `com.corejbh.pocketcore` |
+| Version | 1.0.0 (versionCode 21) |
+| Release APK | `pocketcore-1.0.0-release-v21.apk`, 8,499,175 bytes, SHA-256 `f077100aaf7103cba6bad1e2a79c352419525485ba17be1d46c0b95f91fac54d` |
+| Signing | `keystore/pocketcore-release.jks`, alias `pocketcore`; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` (unchanged; `apksigner verify` reports DN `CN=CoreJBH, OU=POCKETCORE, O=CoreJBH, L=Gumi, ST=Gyeongsangbuk-do, C=KR`) |
+| Daemon in the APK | `lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
+| Lint | 0 errors, 16 warnings, 3 information in `lintDebug` and in `lintRelease` (`abortOnError = true`) |
+| Unit tests | 292 passing in `testDebugUnitTest` (272 before this build) |
+| zipalign | `zipalign -c -p 4` passes |
+| Debug APK | none produced or published for this version |
+
+The release checklist was `:app:testDebugUnitTest :app:lintDebug :app:lintRelease
+:app:assembleRelease`, all green. The absent step is `:app:assembleDebug`: this
+build is the one that stops shipping it.
+
+### The findings
+
+**The RPC user sat in the clear.** `NodeSettings` sealed the password with
+`SecretStore` since versionCode 9 and kept the user half of the same Basic Auth
+pair in plain `SharedPreferences`. The pair is now sealed together
+(`rpc_user_enc`), a plaintext `rpc_user` written by an earlier build is read once
+and re-encrypted in place by `SecretStore.read`, and `rotateCredentials()` writes
+the user through the store as well - so an upgraded install keeps the credential
+it was started with. A credential is generated only when neither a ciphertext nor
+a legacy plaintext value is stored (`secretMissing`); an entry that exists but
+cannot be opened right now is left alone, the same rule the password has had
+since versionCode 20.
+
+**The listener proof was a one-time fact.** `clientAllowed()` asks for a RUNNING
+node, a verified listener and a live process - all three true at the moment the
+start proved the port. `loadtxoutset`, `dumptxoutset` and `scantxoutset` then ran
+for minutes on that memory alone, while the user could stop the node, Android
+could kill the daemon, another app could take the port, and the reply would still
+be written back as this node's state. `SensitiveRpc` reads the facts fresh before
+the request and again after the reply: status, listener, process, `shouldRun`, the
+lifecycle generation and the port's **current** owner
+(`BitcoindNode.listenerOwner`, not the cached flag). A refusal says which fact
+failed; a reply that loses its facts is reported as a lost result instead of a
+finished one. The scan goes through the same gate
+(`DescriptorScanController.scan`), and its own cancel path still cancels the job
+before it asks the daemon.
+
+**A snapshot file was only checked by its size.** `importSnapshot` refused
+anything under 1 KB and nothing else, so a screenshot, an archive or a snapshot
+of another network was copied - gigabytes - and only `loadtxoutset` could say it
+was wrong. `SnapshotHeader` now decodes the header Core v32.1 writes
+(`src/node/utxo_snapshot.h`: magic `utxo` 0xFF, little-endian version 2, the
+network's `pchMessageStart`, the 32-byte base block hash and the 8-byte coin
+count) and refuses a wrong magic, an unsupported version, another network, a
+zero base hash or zero coins - before the copy starts, and again on the copied
+file. `loadSnapshot` checks the stored file's header before it calls the daemon.
+
+**The load check measured the wrong file.** `loadtxoutset` writes a second
+chainstate and keeps the existing one, and the old check compared free space with
+the snapshot file, which is already on disk. `StorageBudget.requiredLoadBytes`
+budgets the larger of the snapshot's size and the chainstate already on the phone
+(`NodePaths.chainstateBytes`), plus the 64 MB reserve, and the card names both
+chainstates and what to free. The measurements behind the numbers are in
+`docs/mobile-architecture.md`: `gettxoutsetinfo.disk_size` 13,290,295,029 bytes at
+block 935,000, an 8.8 GiB snapshot file at 965,000, and 894.93 GB for the full
+chain at 977,085.
+
+**The published app had two identities.** GitHub Releases shipped a debug-signed
+`com.jbitmstr.pocketcore` upgrade APK while Play shipped the release-signed
+`com.corejbh.pocketcore`, and the README explained both. The debug line is over:
+`README.md` documents one signature (`com.corejbh.pocketcore`, the release
+keystore), the install path is `:app:assembleRelease`, and the new release
+pipeline in `docs/ci/build-release.yml` builds, verifies and publishes only that
+artifact, with every action pinned to a commit SHA (checkout `11bd719`,
+setup-java `7a6d8a8`, upload-artifact `65c4c4a`, download-artifact `d3f86a1`)
+and a step that fails the job if the APK is `com.jbitmstr` or carries the
+Android debug key. It lives in `docs/ci/` rather than `.github/workflows/`
+because a GitHub App token without the `workflows` scope cannot push a workflow
+file (the push of the version under `.github/workflows/` was rejected with
+"refusing to allow a GitHub App to create or update workflow"); the owner
+installs it there once.
+A phone that still runs the debug build reaches the release app by exporting a
+snapshot and loading it after the reinstall; the README says so.
+
+### The two documents
+
+`README.md` loses the "about 1 GB free storage" line (the prune target is not the
+node: the chainstate is 12-13 GB more), the debug-key installation text and the
+750-800 GB figure (a full mainnet chain is ~890-900 GB today), and gains the
+snapshot header and load-space wording. `docs/mobile-architecture.md` is new: the
+storage measurements with their sources, `listen=1` on a mobile NAT and what to
+write instead (`listen=0` by default, a forwarded-port switch, or Tor onion
+service inbound), the full-UTXO `scantxoutset` walk and the cheaper ways to
+answer the same question (remember the last scan, rescan only after the chain
+moved, BIP158 filters, no server), and the unbounded `PARTIAL_WAKE_LOCK` with a
+bounded lock renewed by progress, a slower poll while caught up and a Doze-
+friendly wake-up. Those three are proposals with their touchpoints; this build
+changes the snapshot header, the load budget and the sensitive-RPC gate.
+
 ## versionCode 20 — tenth review
 
 Built on 2026-11-23 from `main` at `30a32a8`. Ten review findings, all in the
