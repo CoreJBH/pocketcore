@@ -36,4 +36,24 @@ class FormatTest {
     fun formatsFeeRate() {
         assertEquals("1 sat/vB", formatFeeRate(0.00001))
     }
+
+    @Test
+    fun formatsBtcFromExactSatoshi() {
+        assertEquals("49.5", formatBtc(4_950_000_000L, withUnit = false))
+        assertEquals("49.4999718", formatBtc(4_949_997_180L, withUnit = false))
+        assertEquals("0.00000001", formatBtc(1L, withUnit = false))
+        assertEquals("0.0", formatBtc(0L, withUnit = false))
+        assertEquals("1.0 BTC", formatBtc(100_000_000L))
+        // An amount a Double cannot hold exactly is still shown exactly.
+        assertEquals("0.1", formatBtc(10_000_000L, withUnit = false))
+        assertEquals("0.3", formatBtc(30_000_000L, withUnit = false))
+    }
+
+    @Test
+    fun formatsSatoshiFromTheInteger() {
+        assertEquals("0 sat", formatSats(0L))
+        assertEquals("2,820 sat", formatSats(2_820L))
+        // The whole supply, 21 million BTC, in satoshis.
+        assertEquals("2,100,000,000,000,000 sat", formatSats(2_100_000_000_000_000L))
+    }
 }

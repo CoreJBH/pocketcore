@@ -65,9 +65,51 @@ class NodePathsReadTest {
     }
 
     @Test
-    fun readFromAnOffsetPastTheEndIsEmpty() {
+    fun aShrunkenLogIsReadFromTheStartInsteadOfTheOldOffset() {
+        // -shrinkdebugfile=1 rewrites debug.log at startup, keeping its recent
+        // tail: the file a start recorded a 1.5 MB offset in becomes 4 KB long.
+        // Reading from the offset would return nothing, the bind line written
+        // after the shrink would never be seen, and ListenerFallback would call
+        // the port FOREIGN and kill the healthy node that just bound it.
+        val before = "filler line from an earlier run\n".repeat(50_000)
+        val file = tempFile(before)
+        val offset = file.length()
+        assertTrue(offset > 4_096L)
+
+        val keptTail = "2026-11-22T05:10:00Z New best header\n"
+        val bind = "2026-11-22T05:12:09Z Binding RPC on address 127.0.0.1 port 8332\n"
+        file.writeText(keptTail + bind)
+        assertTrue(file.length() < offset)
+
+        val window = NodePaths.readFrom(file, offset)
+        assertTrue(window.startsWith("2026-11-22T05:10:00Z"))
+        assertTrue(ListenerFallback.rpcBindConfirmed(window, 8332))
+        assertEquals(keptTail + bind, window)
+    }
+
+    @Test
+    fun anOffsetPastTheEndReadsTheShrunkFileNotNothing() {
         val file = tempFile("short")
+        assertEquals("short", NodePaths.readFrom(file, 10_000L))
+    }
+
+    @Test
+    fun anEmptyTruncatedLogReadsAsEmpty() {
+        // Core can truncate the log to nothing before it writes the next line;
+        // there is simply no window, and the bind evidence stays missing for
+        // this pass rather than a stale line vouching for the start.
+        val file = tempFile("")
         assertEquals("", NodePaths.readFrom(file, 10_000L))
+    }
+
+    @Test
+    fun aShrunkenLogIsStillCapped() {
+        // The reset offset makes the whole current file the window, so the cap
+        // still applies: a log that was truncated and then grew past a megabyte
+        // cannot be read into one array.
+        val file = tempFile("Z".repeat(3 * 1024 * 1024))
+        val text = NodePaths.readFrom(file, 5_000_000L)
+        assertEquals(NodePaths.MAX_LOG_READ_BYTES, text.length)
     }
 
     @Test

@@ -94,6 +94,16 @@ android {
         applicationId = "com.corejbh.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 17: seventh review. debug.log can shrink under the offset
+        // a start recorded (-shrinkdebugfile keeps only the recent tail), so the
+        // bind evidence is read from the start of the truncated file instead of
+        // from a position past its end - otherwise an empty window called a
+        // healthy node FOREIGN and killed it. The snapshot operations (import,
+        // export, load, clear) run one at a time behind a gate and write the
+        // state under the node mutex, so a clear cannot delete the file an import
+        // is publishing while an export dumps the chainstate a load is changing.
+        // RPC poll passes no longer overlap. Explorer amounts and fees are exact
+        // integer satoshi arithmetic instead of Double sums.
         // versionCode 16: sixth security and state review. The UTXO snapshot
         // export and load go through the same client() gate as every other RPC
         // caller, so a dump is never sent to a port this app has not proved is
@@ -205,7 +215,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 16
+        versionCode = 17
         versionName = "1.0.0"
 
         // The hash of the bundled daemon, embedded for the integrity check in

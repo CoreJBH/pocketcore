@@ -185,6 +185,10 @@ object NodeController {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
+    /** One RPC poll pass at a time (see [RefreshGate]). */
+    private val refreshGate = RefreshGate()
+    /** One snapshot operation at a time (see [SnapshotGate]). */
+    private val snapshotGate = SnapshotGate()
     private val portResolver = PortResolver.live()
 
     private lateinit var appContext: Context
@@ -692,6 +696,15 @@ object NodeController {
     }
 
     private suspend fun refresh() {
+        // One pass at a time (see [RefreshGate]): the poll loop, a peer action and
+        // a snapshot action all ask for a refresh, and two overlapping passes
+        // would write the same state from replies that can arrive in either
+        // order. A request that arrives while a pass is running is dropped - the
+        // running pass is asking the same node a moment later.
+        refreshGate.run { refreshPass() }
+    }
+
+    private suspend fun refreshPass() {
         val client = rpc ?: return
         // The lifecycle generation this pass is about. A start or stop that
         // happens while the requests below are in flight takes the next number,
@@ -1035,65 +1048,105 @@ object NodeController {
 
     // --- AssumeUTXO snapshots ---------------------------------------------
 
+    /**
+     * Runs [block] while holding [mutex].
+     *
+     * For the snapshot operations, which hold [snapshotGate] first and take this
+     * lock second, only for the short step that writes the state or the settings
+     * (see [SnapshotGate] for the lock order). No caller that already holds
+     * [mutex] may use this: the mutex is not reentrant.
+     */
+    private suspend fun <T> withStateLock(block: suspend () -> T): T = mutex.withLock { block() }
+
+    /** [withStateLock] for the usual case: one write of [NodeUiState]. */
+    private suspend fun updateWithStateLock(transform: (NodeUiState) -> NodeUiState) {
+        withStateLock { _state.update(transform) }
+    }
+
     fun importSnapshot(uri: android.net.Uri, displayName: String?) {
         scope.launch {
-            _state.update { it.copy(snapshot = it.snapshot.copy(busy = true, error = null, result = null)) }
-            val result = runCatching {
+            // A snapshot copy can be hundreds of megabytes, so the snapshot gate
+            // is held for it while the node mutex is taken only for the two
+            // short steps that write the settings and the state: CLEAR waits for
+            // the copy instead of deleting the file under it, and STOP is not
+            // held up while the bytes move.
+            snapshotGate.run {
                 val label = displayName?.substringAfterLast('/') ?: "snapshot.dat"
-                val target = NodeConfig.snapshotTarget(appContext, label)
-                // The copy lands in a .part file next to the target and is renamed
-                // only once it is complete and plausible: an interrupted or
-                // rejected import leaves no half file behind for the daemon, and
-                // the previous snapshot stays in place.
-                val partial = File(target.absolutePath + PART_SUFFIX)
-                try {
-                    val stream = appContext.contentResolver.openInputStream(uri)
-                        ?: throw IllegalStateException("The selected file cannot be read.")
-                    stream.use { input ->
-                        partial.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    if (partial.length() < 1024) {
-                        throw IllegalStateException("That file is too small to be a UTXO snapshot.")
-                    }
-                    if (!partial.renameTo(target)) {
-                        throw IllegalStateException("The snapshot could not be moved into place.")
-                    }
-                } catch (error: Throwable) {
-                    runCatching { partial.delete() }
-                    throw error
+                updateWithStateLock {
+                    it.copy(snapshot = it.snapshot.copy(busy = true, error = null, result = null))
                 }
-                settings.setSnapshot(target.absolutePath, label)
-                target
-            }
-            val target = result.getOrNull()
-            _state.update {
-                it.copy(
-                    config = settings.state.value,
-                    snapshot = if (target != null) {
-                        SnapshotModel(
-                            path = target.absolutePath,
-                            label = settings.state.value.snapshotLabel,
-                            sizeBytes = target.length(),
-                            result = "Snapshot file ready. Load it while the node is running."
-                        )
-                    } else {
-                        it.snapshot.copy(busy = false, error = result.exceptionOrNull()?.message ?: "Import failed")
+                val result = runCatching {
+                    val target = NodeConfig.snapshotTarget(appContext, label)
+                    // The copy lands in a .part file next to the target and is renamed
+                    // only once it is complete and plausible: an interrupted or
+                    // rejected import leaves no half file behind for the daemon, and
+                    // the previous snapshot stays in place.
+                    val partial = File(target.absolutePath + PART_SUFFIX)
+                    try {
+                        val stream = appContext.contentResolver.openInputStream(uri)
+                            ?: throw IllegalStateException("The selected file cannot be read.")
+                        stream.use { input ->
+                            partial.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        if (partial.length() < 1024) {
+                            throw IllegalStateException("That file is too small to be a UTXO snapshot.")
+                        }
+                        if (!partial.renameTo(target)) {
+                            throw IllegalStateException("The snapshot could not be moved into place.")
+                        }
+                    } catch (error: Throwable) {
+                        runCatching { partial.delete() }
+                        throw error
                     }
-                )
+                    target
+                }
+                val target = result.getOrNull()
+                // Published with the gate held, so a CLEAR asked for during the
+                // copy runs after this and deletes what this path points at. The
+                // settings write and the state that shows it happen under one
+                // lock, so the card never names a path the settings do not hold.
+                withStateLock {
+                    if (target != null) settings.setSnapshot(target.absolutePath, label)
+                    _state.update {
+                        it.copy(
+                            config = settings.state.value,
+                            snapshot = if (target != null) {
+                                SnapshotModel(
+                                    path = target.absolutePath,
+                                    label = settings.state.value.snapshotLabel,
+                                    sizeBytes = target.length(),
+                                    result = "Snapshot file ready. Load it while the node is running."
+                                )
+                            } else {
+                                it.snapshot.copy(
+                                    busy = false,
+                                    error = result.exceptionOrNull()?.message ?: "Import failed"
+                                )
+                            }
+                        )
+                    }
+                }
             }
         }
     }
 
     fun clearSnapshot() {
         scope.launch {
-            val path = settings.state.value.snapshotPath
-            if (path != null) runCatching { File(path).delete() }
-            settings.setSnapshot(null, null)
-            _state.update {
-                it.copy(
-                    config = settings.state.value,
-                    snapshot = SnapshotModel()
-                )
+            snapshotGate.run {
+                // The file goes first, then the record of it: a path that is gone
+                // from the settings is never left pointing at a file that is
+                // still there, and no LOAD can be reading it (same gate).
+                val path = settings.state.value.snapshotPath
+                if (path != null) runCatching { File(path).delete() }
+                withStateLock {
+                    settings.setSnapshot(null, null)
+                    _state.update {
+                        it.copy(
+                            config = settings.state.value,
+                            snapshot = SnapshotModel()
+                        )
+                    }
+                }
             }
         }
     }
@@ -1111,77 +1164,82 @@ object NodeController {
      */
     fun exportSnapshot(uri: android.net.Uri, displayName: String?) {
         scope.launch {
-            val network = settings.state.value.network
-            val name = displayName?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
-                ?: "pocketcore-${network.chainArg}.dat"
-            // The same gate every other RPC caller goes through ([client]): a
-            // dump is a long request to the daemon, and it may only be sent to a
-            // port this app has proved is its own node. The gate is asked
-            // before the card switches to "busy", so a stopped node gets the
-            // refusal instead of a progress line that cannot advance.
-            val client = client()
-            if (client == null) {
-                _state.update {
-                    it.copy(
-                        snapshotExport = SnapshotExportModel(
-                            fileName = name,
-                            error = "Start the node before exporting a snapshot."
-                        )
-                    )
-                }
-                return@launch
-            }
-            _state.update {
-                it.copy(
-                    snapshotExport = SnapshotExportModel(
-                        busy = true,
-                        stage = "Dumping the UTXO set",
-                        fileName = name
-                    )
-                )
-            }
-            val temp = NodePaths.snapshotExportFile(appContext, network, System.currentTimeMillis())
-            val partial = File(temp.absolutePath + INCOMPLETE_SUFFIX)
-            val outcome = runCatching {
-                // Core refuses a path that already exists, and a dump it started
-                // earlier may have left one of these behind.
-                temp.delete()
-                partial.delete()
-                val dump = TxOutSetDump.from(client.dumpTxOutSet(temp.absolutePath))
-                if (!temp.exists() || temp.length() < 1024) {
-                    throw IllegalStateException("Core reported a snapshot but left no file to copy.")
-                }
-                _state.update {
-                    it.copy(snapshotExport = it.snapshotExport.copy(stage = "Saving the file"))
-                }
-                val stream = appContext.contentResolver.openOutputStream(uri)
-                    ?: throw IllegalStateException("The chosen file could not be opened for writing.")
-                stream.use { output ->
-                    temp.inputStream().use { input -> input.copyTo(output) }
-                }
-                dump to temp.length()
-            }
-            temp.delete()
-            partial.delete()
-            val saved = outcome.getOrNull()
-            _state.update {
-                it.copy(
-                    snapshotExport = if (saved != null) {
-                        SnapshotExportModel(
-                            fileName = name,
-                            bytesWritten = saved.second,
-                            dump = saved.first
-                        )
-                    } else {
-                        SnapshotExportModel(
-                            fileName = name,
-                            error = outcome.exceptionOrNull()?.message
-                                ?: "The snapshot could not be exported."
+            // A dump is minutes of chainstate walking, so it holds the snapshot
+            // gate (no LOAD or CLEAR runs against the same chainstate meanwhile)
+            // and takes the node mutex only for the card's three state changes.
+            snapshotGate.run {
+                val network = settings.state.value.network
+                val name = displayName?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+                    ?: "pocketcore-${network.chainArg}.dat"
+                // The same gate every other RPC caller goes through ([client]): a
+                // dump is a long request to the daemon, and it may only be sent to a
+                // port this app has proved is its own node. The gate is asked
+                // before the card switches to "busy", so a stopped node gets the
+                // refusal instead of a progress line that cannot advance.
+                val client = client()
+                if (client == null) {
+                    updateWithStateLock {
+                        it.copy(
+                            snapshotExport = SnapshotExportModel(
+                                fileName = name,
+                                error = "Start the node before exporting a snapshot."
+                            )
                         )
                     }
-                )
+                    return@run
+                }
+                updateWithStateLock {
+                    it.copy(
+                        snapshotExport = SnapshotExportModel(
+                            busy = true,
+                            stage = "Dumping the UTXO set",
+                            fileName = name
+                        )
+                    )
+                }
+                val temp = NodePaths.snapshotExportFile(appContext, network, System.currentTimeMillis())
+                val partial = File(temp.absolutePath + INCOMPLETE_SUFFIX)
+                val outcome = runCatching {
+                    // Core refuses a path that already exists, and a dump it started
+                    // earlier may have left one of these behind.
+                    temp.delete()
+                    partial.delete()
+                    val dump = TxOutSetDump.from(client.dumpTxOutSet(temp.absolutePath))
+                    if (!temp.exists() || temp.length() < 1024) {
+                        throw IllegalStateException("Core reported a snapshot but left no file to copy.")
+                    }
+                    updateWithStateLock {
+                        it.copy(snapshotExport = it.snapshotExport.copy(stage = "Saving the file"))
+                    }
+                    val stream = appContext.contentResolver.openOutputStream(uri)
+                        ?: throw IllegalStateException("The chosen file could not be opened for writing.")
+                    stream.use { output ->
+                        temp.inputStream().use { input -> input.copyTo(output) }
+                    }
+                    dump to temp.length()
+                }
+                temp.delete()
+                partial.delete()
+                val saved = outcome.getOrNull()
+                updateWithStateLock {
+                    it.copy(
+                        snapshotExport = if (saved != null) {
+                            SnapshotExportModel(
+                                fileName = name,
+                                bytesWritten = saved.second,
+                                dump = saved.first
+                            )
+                        } else {
+                            SnapshotExportModel(
+                                fileName = name,
+                                error = outcome.exceptionOrNull()?.message
+                                    ?: "The snapshot could not be exported."
+                            )
+                        }
+                    )
+                }
+                refreshOnceNow()
             }
-            refreshOnceNow()
         }
     }
 
@@ -1194,38 +1252,49 @@ object NodeController {
 
     fun loadSnapshot() {
         scope.launch {
-            // Through the gate as well: loading a snapshot writes the chainstate
-            // of the daemon on the other end, and that must be this app's node.
-            val client = client()
-            val path = settings.state.value.snapshotPath
-            if (client == null) {
-                _state.update { it.copy(snapshot = it.snapshot.copy(error = "Start the node before loading a snapshot.")) }
-                return@launch
-            }
-            if (path == null || !File(path).exists()) {
-                _state.update { it.copy(snapshot = it.snapshot.copy(error = "Choose a snapshot file first.")) }
-                return@launch
-            }
-            _state.update { it.copy(snapshot = it.snapshot.copy(busy = true, error = null, result = null)) }
-            val outcome = runCatching { client.loadTxOutSet(path) }
-            val json: JSONObject? = outcome.getOrNull()
-            _state.update {
-                it.copy(
-                    snapshot = if (json != null) {
-                        it.snapshot.copy(
-                            busy = false,
-                            result = describeLoadResult(json),
-                            error = null
-                        )
-                    } else {
-                        it.snapshot.copy(
-                            busy = false,
-                            error = outcome.exceptionOrNull()?.message ?: "loadtxoutset failed"
-                        )
+            // Serialized with IMPORT and CLEAR ([SnapshotGate]): the file this
+            // reads is the one CLEAR deletes, and the chainstate this writes is
+            // the one EXPORT dumps.
+            snapshotGate.run {
+                // Through the gate as well: loading a snapshot writes the chainstate
+                // of the daemon on the other end, and that must be this app's node.
+                val client = client()
+                val path = settings.state.value.snapshotPath
+                if (client == null) {
+                    updateWithStateLock {
+                        it.copy(snapshot = it.snapshot.copy(error = "Start the node before loading a snapshot."))
                     }
-                )
+                    return@run
+                }
+                if (path == null || !File(path).exists()) {
+                    updateWithStateLock {
+                        it.copy(snapshot = it.snapshot.copy(error = "Choose a snapshot file first."))
+                    }
+                    return@run
+                }
+                updateWithStateLock {
+                    it.copy(snapshot = it.snapshot.copy(busy = true, error = null, result = null))
+                }
+                val outcome = runCatching { client.loadTxOutSet(path) }
+                val json: JSONObject? = outcome.getOrNull()
+                updateWithStateLock {
+                    it.copy(
+                        snapshot = if (json != null) {
+                            it.snapshot.copy(
+                                busy = false,
+                                result = describeLoadResult(json),
+                                error = null
+                            )
+                        } else {
+                            it.snapshot.copy(
+                                busy = false,
+                                error = outcome.exceptionOrNull()?.message ?: "loadtxoutset failed"
+                            )
+                        }
+                    )
+                }
+                refreshOnceNow()
             }
-            refreshOnceNow()
         }
     }
 

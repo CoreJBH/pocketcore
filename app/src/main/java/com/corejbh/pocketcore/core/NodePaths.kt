@@ -120,13 +120,22 @@ object NodePaths {
      * end of the file because the line being looked for is written right after
      * the offset: the bind evidence of a start sits in the first bytes of its
      * own window, and reading the tail instead would drop exactly that line.
+     *
+     * A file that is **shorter than the offset** was truncated, and the window
+     * then starts at 0. Core rewrites debug.log at startup when
+     * `-shrinkdebugfile=1` keeps it (it keeps the recent tail and drops the
+     * rest), so the offset a start recorded can sit past the end of the file it
+     * came from. Reading from the offset would return nothing at all, the bind
+     * line written after the shrink would be missed, [ListenerFallback] would
+     * call the port foreign and the node it just launched would be killed - a
+     * healthy daemon taken for a stranger because its log got shorter.
      */
     fun readFrom(file: File, offset: Long, maxBytes: Int = MAX_LOG_READ_BYTES): String {
         if (!file.exists()) return ""
         return runCatching {
             RandomAccessFile(file, "r").use { access ->
                 val length = access.length()
-                val start = offset.coerceIn(0L, length)
+                val start = if (offset > length) 0L else offset.coerceIn(0L, length)
                 val wanted = minOf(length - start, maxBytes.coerceAtLeast(0).toLong()).toInt()
                 access.seek(start)
                 val bytes = ByteArray(wanted)

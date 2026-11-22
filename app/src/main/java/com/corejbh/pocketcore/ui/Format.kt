@@ -59,8 +59,31 @@ fun formatBtc(amount: Double, withUnit: Boolean = true): String {
     return if (withUnit) "$text BTC" else text
 }
 
+/**
+ * The same BTC amount taken from exact satoshis.
+ *
+ * Eight decimals are cut straight out of the integer instead of formatting a
+ * `Double`: an amount the explorer already holds in satoshis is shown as the
+ * satoshis say, with no `%.8f` of a binary fraction in between.
+ */
+fun formatBtc(sats: Long, withUnit: Boolean = true): String {
+    val negative = sats < 0
+    val abs = if (negative) -sats else sats
+    val whole = abs / SATS_PER_BTC
+    val fraction = (abs % SATS_PER_BTC).toString().padStart(8, '0').trimEnd('0')
+    val text = (if (negative) "-" else "") + whole +
+        (if (fraction.isEmpty()) ".0" else ".$fraction")
+    return if (withUnit) "$text BTC" else text
+}
+
 fun formatSats(amount: Double): String =
     formatCount(kotlin.math.round(amount * 100_000_000.0).toLong()) + " sat"
+
+/** Satoshis, as the integer they already are. */
+fun formatSats(sats: Long): String = formatCount(sats) + " sat"
+
+/** Satoshis in one bitcoin, kept next to the two formatters that use it. */
+private const val SATS_PER_BTC = 100_000_000L
 
 private val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply {
     timeZone = java.util.TimeZone.getDefault()

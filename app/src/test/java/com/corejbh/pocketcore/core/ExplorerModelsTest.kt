@@ -103,8 +103,10 @@ class ExplorerModelsTest {
         assertEquals(59L, parsed.vsize)
         assertEquals(234L, parsed.weight)
         assertEquals(49.4999718 + 0.0000282, parsed.totalOut, 0.00000001)
+        assertEquals(4_950_000_000L, parsed.totalOutSats)
         assertFalse(parsed.inMempool)
         assertNull(parsed.fee)
+        assertNull(parsed.feeSats)
         assertEquals(1795171918L, parsed.blockTime)
     }
 
@@ -128,6 +130,58 @@ class ExplorerModelsTest {
         assertEquals(49.5 - 49.4999718 - 0.0000282, parsed.fee!!, 0.00000001)
         assertEquals("bcrt1qsrc", parsed.inputs[0].address)
         assertEquals("bcrt1qdest", parsed.outputs[0].address)
+        // The same fee in integer satoshis: this transaction's prevout covers its
+        // outputs exactly, so there is nothing left over and nothing to drift.
+        assertEquals(4_950_000_000L, parsed.inputs[0].valueSats)
+        assertEquals(2_820L, parsed.outputs[1].valueSats)
+        assertEquals(0L, parsed.feeSats)
+    }
+
+    @Test
+    fun aFeeIsExactSatoshiArithmetic() {
+        // 0.1 + 0.2 is 0.30000000000000004 in Double, so summing output amounts
+        // that way gives a transaction whose inputs cover it a fee of about
+        // -5e-17 BTC instead of zero.
+        val json = JSONObject(
+            """
+            {"txid":"f1","version":2,"size":100,"vsize":100,"weight":400,"locktime":0,
+             "vin":[{"txid":"a","vout":0,"prevout":{"value":0.3,"scriptPubKey":{"address":"bc1qa"}}}],
+             "vout":[{"value":0.1,"n":0,"scriptPubKey":{"address":"bc1qb"}},
+                     {"value":0.2,"n":1,"scriptPubKey":{"address":"bc1qc"}}]}
+            """.trimIndent()
+        )
+        val parsed = TxSummary.from(json)
+        assertEquals(30_000_000L, parsed.totalOutSats)
+        assertEquals(0L, parsed.feeSats)
+        assertEquals(0.0, parsed.fee!!, 0.0)
+        assertEquals(30_000_000L, parsed.inputs[0].valueSats)
+    }
+
+    @Test
+    fun manyTinyOutputsAddUpWithoutDrift() {
+        // A thousand outputs of one satoshi each: a Double sum of 0.00000001
+        // repeated is exactly where the accumulated error used to show.
+        val outputs = (0 until 1_000).joinToString(",") { "{\"value\":0.00000001,\"n\":$it}" }
+        val json = JSONObject(
+            """{"txid":"f2","version":2,"size":100,"vsize":100,"weight":400,"locktime":0,
+                "vin":[{"txid":"a","vout":0,"prevout":{"value":0.001}}],
+                "vout":[$outputs]}""".trimIndent()
+        )
+        val parsed = TxSummary.from(json)
+        assertEquals(1_000L, parsed.totalOutSats)
+        assertEquals(100_000L - 1_000L, parsed.feeSats)
+    }
+
+    @Test
+    fun aPrevoutWithAFractionOfASatoshiStillGivesAWholeFee() {
+        val json = JSONObject(transaction.toString())
+        json.getJSONArray("vin").getJSONObject(0).put(
+            "prevout",
+            JSONObject("""{"value":49.500000019,"scriptPubKey":{"address":"bcrt1qsrc"}}""")
+        )
+        val parsed = TxSummary.from(json)
+        assertEquals(4_950_000_002L, parsed.inputs[0].valueSats)
+        assertEquals(2L, parsed.feeSats)
     }
 
     @Test

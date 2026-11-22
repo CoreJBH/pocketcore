@@ -279,7 +279,7 @@ private fun BlockDetail(block: BlockInfo, context: android.content.Context) {
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = formatBtc(transaction.totalOut, withUnit = false),
+                    text = formatBtc(transaction.totalOutSats, withUnit = false),
                     color = PocketColors.Muted,
                     fontSize = 10.sp,
                     fontFamily = Mono
@@ -365,8 +365,8 @@ private fun TransactionDetail(transaction: TxSummary, context: android.content.C
     InfoRow("Version", transaction.version.toString())
     InfoRow("Locktime", transaction.locktime.toString())
     transaction.blockTime?.let { InfoRow("Block time", formatDateTime(it), mono = false) }
-    InfoRow("Outputs total", formatBtc(transaction.totalOut))
-    transaction.fee?.let { InfoRow("Fee", "${formatBtc(it)} (${formatSats(it)})") }
+    InfoRow("Outputs total", formatBtc(transaction.totalOutSats))
+    transaction.feeSats?.let { InfoRow("Fee", "${formatBtc(it)} (${formatSats(it)})") }
 
     SpacerH(12)
     SectionLabel("Inputs (${transaction.inputCount})")
@@ -393,7 +393,7 @@ private fun TransactionDetail(transaction: TxSummary, context: android.content.C
                 )
             }
             Text(
-                text = input.value?.let { formatBtc(it, withUnit = false) } ?: "-",
+                text = input.valueSats?.let { formatBtc(it, withUnit = false) } ?: "-",
                 color = PocketColors.Muted,
                 fontSize = 10.sp,
                 fontFamily = Mono
@@ -432,7 +432,7 @@ private fun TransactionDetail(transaction: TxSummary, context: android.content.C
                 )
             }
             Text(
-                text = formatBtc(output.value, withUnit = false),
+                text = formatBtc(output.valueSats, withUnit = false),
                 color = PocketColors.Text,
                 fontSize = 10.sp,
                 fontFamily = Mono

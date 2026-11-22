@@ -74,14 +74,22 @@ data class BlockInfo(
     }
 }
 
-/** One input of a transaction, resolved as far as the node can resolve it. */
+/**
+ * One input of a transaction, resolved as far as the node can resolve it.
+ *
+ * [valueSats] is the amount in satoshis, the unit the fee is computed in (see
+ * [BtcAmount]); [value] is the same amount in BTC for the screen.
+ */
 data class TxInput(
     val prevTxid: String,
     val previousOutput: Int,
     val address: String?,
-    val value: Double?,
+    val valueSats: Long?,
     val coinbase: Boolean
 ) {
+    /** Amount of the spent output in BTC, or null when Core did not resolve it. */
+    val value: Double? get() = valueSats?.let { BtcAmount.toBtc(it) }
+
     companion object {
         fun from(json: JSONObject): TxInput {
             val coinbase = json.has("coinbase") || json.optBoolean("is_coinbase", false)
@@ -91,28 +99,39 @@ data class TxInput(
                 prevTxid = json.optString("txid", if (coinbase) "Coinbase" else ""),
                 previousOutput = json.optInt("vout", -1),
                 address = script?.addressText(),
-                value = prevout?.optDoubleOrNull("value"),
+                valueSats = prevout?.let { BtcAmount.fromJson(it, "value") },
                 coinbase = coinbase
             )
         }
     }
 }
 
-/** One output of a transaction. */
+/**
+ * One output of a transaction.
+ *
+ * Like [TxInput], the amount is kept in satoshis ([valueSats]) and shown in BTC
+ * ([value]): a `Double` per output added up across a transaction is where the
+ * total and the fee used to drift.
+ */
 data class TxOutput(
     val index: Int,
     val address: String?,
-    val value: Double,
+    val valueSats: Long,
     val type: String?,
     val scriptHex: String?
 ) {
+    /** Amount in BTC. */
+    val value: Double get() = BtcAmount.toBtc(valueSats)
+
     companion object {
         fun from(json: JSONObject): TxOutput {
             val script = json.optJSONObject("scriptPubKey")
             return TxOutput(
                 index = json.optInt("n"),
                 address = script?.addressText(),
-                value = json.optDouble("value", 0.0),
+                // An output without a readable value counts as zero: the total
+                // then understates rather than inventing an amount.
+                valueSats = BtcAmount.fromJson(json, "value") ?: 0L,
                 type = script?.optStringOrNull("type"),
                 scriptHex = script?.optStringOrNull("hex")
             )
@@ -134,12 +153,20 @@ data class TxSummary(
     val inMempool: Boolean,
     val inputs: List<TxInput>,
     val outputs: List<TxOutput>,
-    val totalOut: Double,
-    val fee: Double?,
+    /** Sum of the outputs, in satoshis - the total the fee is subtracted from. */
+    val totalOutSats: Long,
+    /** Input total minus output total, in satoshis; null when a prevout is missing. */
+    val feeSats: Long?,
     val isCoinbase: Boolean
 ) {
     val inputCount: Int get() = inputs.size
     val outputCount: Int get() = outputs.size
+
+    /** Sum of the outputs, in BTC. */
+    val totalOut: Double get() = BtcAmount.toBtc(totalOutSats)
+
+    /** Fee in BTC, derived from [feeSats]. */
+    val fee: Double? get() = feeSats?.let { BtcAmount.toBtc(it) }
 
     companion object {
         fun from(json: JSONObject): TxSummary {
@@ -155,10 +182,16 @@ data class TxSummary(
                     array.optJSONObject(index)?.let { add(TxOutput.from(it)) }
                 }
             }
-            val totalOut = outputs.sumOf { it.value }
-            val fee = if (inputs.isNotEmpty() && inputs.all { it.value != null && !it.coinbase }) {
-                inputs.sumOf { it.value ?: 0.0 } - totalOut
+            // Integer satoshi arithmetic ([BtcAmount]): outputs are summed, and
+            // the fee is the inputs' total minus that sum, with no binary
+            // fraction to round. A transaction whose prevouts are exactly its
+            // outputs therefore has a fee of 0 sat, not of -5e-17 BTC.
+            val totalOutSats = outputs.sumOf { it.valueSats }
+            val feeSats = if (inputs.isNotEmpty() && inputs.all { it.valueSats != null && !it.coinbase }) {
+                inputs.sumOf { it.valueSats!! } - totalOutSats
             } else {
+                // A prevout the node could not resolve leaves the inputs' total
+                // unknown, so there is no fee to show rather than a wrong one.
                 null
             }
             return TxSummary(
@@ -174,8 +207,8 @@ data class TxSummary(
                 inMempool = !json.has("blockhash") && !json.has("confirmations"),
                 inputs = inputs,
                 outputs = outputs,
-                totalOut = totalOut,
-                fee = fee,
+                totalOutSats = totalOutSats,
+                feeSats = feeSats,
                 isCoinbase = inputs.any { it.coinbase }
             )
         }
@@ -289,11 +322,6 @@ internal fun JSONObject.optStringOrNull(key: String): String? {
 internal fun JSONObject.optLongOrNull(key: String): Long? {
     if (!has(key) || isNull(key)) return null
     return optLong(key)
-}
-
-internal fun JSONObject.optDoubleOrNull(key: String): Double? {
-    if (!has(key) || isNull(key)) return null
-    return optDouble(key)
 }
 
 /** The single address of a scriptPubKey, however this Core version reports it. */

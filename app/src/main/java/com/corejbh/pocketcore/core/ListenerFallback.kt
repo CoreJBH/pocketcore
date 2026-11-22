@@ -26,6 +26,13 @@ package com.corejbh.pocketcore.core
  * where this daemon would have exited - cannot pass all three together. A
  * listener that answers without the evidence is [SocketOwner.FOREIGN], exactly
  * as if /proc had named it.
+ *
+ * `-shrinkdebugfile=1` is the one case where the offset cannot be used as it
+ * stands: Core truncates the log at startup, so the file becomes shorter than
+ * the offset this start recorded. The read then starts at 0 instead (see
+ * [NodePaths.readFrom]) - otherwise the window would be empty, the bind line
+ * this start writes just after the shrink would never be seen, and a healthy
+ * node would be reported as [SocketOwner.FOREIGN] and killed.
  */
 object ListenerFallback {
 
