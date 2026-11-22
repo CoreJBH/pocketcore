@@ -190,6 +190,11 @@ object NodeController {
     private val refreshGate = RefreshGate()
     /** One snapshot operation at a time (see [SnapshotGate]). */
     private val snapshotGate = SnapshotGate()
+    /**
+     * Coalesces the connectivity callbacks that trigger a policy pass (see
+     * [EnvironmentGate]).
+     */
+    private val environmentGate = EnvironmentGate()
     private val portResolver = PortResolver.live()
 
     /**
@@ -479,7 +484,19 @@ object NodeController {
         }
     }
 
-    fun onEnvironmentChanged() {
+    /**
+     * Wi-Fi, charger or network change: refresh the label and re-check the gate.
+     *
+     * [signature] identifies the connectivity state the callback saw
+     * ([NetworkSignature]). A signal that repeats the previous one inside
+     * [EnvironmentGate.WINDOW_MS] is dropped before any work is done - the
+     * callback fires on changes that cannot move the policy at all (signal
+     * strength, bandwidth), and each admitted pass takes the node mutex and may
+     * stop the daemon. A null signature is an unconditional event (the power
+     * receiver's connect/disconnect broadcast) and always passes.
+     */
+    fun onEnvironmentChanged(signature: String? = null) {
+        if (signature != null && !environmentGate.shouldEvaluate(signature)) return
         _state.update { it.copy(networkLabel = SystemState.networkLabel(appContext)) }
         scope.launch { evaluatePolicy() }
     }
@@ -547,6 +564,10 @@ object NodeController {
             defaultRpc = config.network.rpcPort,
             defaultP2p = config.network.p2pPort,
             ownDaemonRpcPort = ownPort,
+            // Tor routing writes listen=0 (NodeConfig): the daemon binds no P2P
+            // socket, so that port and the loopback port above it are not
+            // probed and not moved (versionCode 19).
+            p2pListener = !config.torProxy,
             stopOwnDaemon = { port ->
                 // The daemon is only asked to stop with this start's own
                 // credentials when its listening socket is proved to be the
@@ -728,7 +749,9 @@ object NodeController {
         // found free. The holds are released right before node.start(), because
         // bitcoind has to bind the endpoints itself.
         val rpcHold = PortProbe.reserve(ports.rpc)
-        val p2pHold = if (ports.p2p != ports.rpc) PortProbe.reserve(ports.p2p) else null
+        // No P2P hold when the daemon does not listen: the reservation would keep
+        // a port for a socket `listen=0` never binds.
+        val p2pHold = if (!config.torProxy && ports.p2p != ports.rpc) PortProbe.reserve(ports.p2p) else null
         try {
             // A fresh credential pair for every start, not only when a port had
             // to be left to another app: an RPC port is loopback only, but a

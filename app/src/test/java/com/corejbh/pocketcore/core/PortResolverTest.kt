@@ -19,13 +19,17 @@ class PortResolverTest {
     /** A fake device where [busy] holds a port and nothing else is taken. */
     private inner class Device(vararg busy: Int) {
         val taken = busy.toMutableSet()
+        val probes = ArrayList<Int>()
         var stopCalls = ArrayList<Int>()
         var straysKilled = 0
         var stopAnswers = true
         var releaseOnStop = true
 
         val resolver = PortResolver(
-            isFree = { port -> port !in taken },
+            isFree = { port ->
+                probes.add(port)
+                port !in taken
+            },
             findFree = { preferred, avoid ->
                 var candidate = preferred
                 while (candidate in taken || candidate in avoid) candidate++
@@ -47,7 +51,7 @@ class PortResolverTest {
             }
         )
 
-        fun resolve(ownDaemonPort: Int? = null) = runBlocking {
+        fun resolve(ownDaemonPort: Int? = null, p2pListener: Boolean = true) = runBlocking {
             resolver.resolve(
                 defaultRpc = defaultRpc,
                 defaultP2p = defaultP2p,
@@ -56,7 +60,8 @@ class PortResolverTest {
                     stopCalls.add(port)
                     stopAnswers
                 },
-                killStrays = { straysKilled++ }
+                killStrays = { straysKilled++ },
+                p2pListener = p2pListener
             )
         }
     }
@@ -155,6 +160,24 @@ class PortResolverTest {
         assertTrue(choice.p2p > defaultP2p)
         assertTrue(choice.p2p != choice.rpc && choice.p2p + 1 != choice.rpc)
         assertTrue(choice.note!!.contains("P2P port 8333 is in use"))
+    }
+
+    /**
+     * Tor routing (`listen=0`) binds no P2P socket, so its port is not probed and
+     * not moved - while the RPC port, which the credentials go to, still is.
+     */
+    @Test
+    fun torRoutingLeavesTheP2pPortAlone() {
+        val device = Device(defaultP2p, defaultP2p + 1)
+        val choice = device.resolve(p2pListener = false)
+        assertEquals(defaultP2p, choice.p2p)
+        assertEquals(defaultRpc, choice.rpc)
+        assertNull(choice.note)
+        assertFalse(
+            "no P2P port is probed when the daemon does not listen",
+            device.probes.any { it == defaultP2p || it == defaultP2p + 1 }
+        )
+        assertTrue("the RPC endpoint is still checked", device.probes.contains(defaultRpc))
     }
 
     @Test

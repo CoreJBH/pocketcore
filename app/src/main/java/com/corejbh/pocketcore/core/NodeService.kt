@@ -50,7 +50,18 @@ class NodeService : Service() {
         }
 
         override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-            NodeController.onEnvironmentChanged()
+            // The signature is only the connectivity facts the policy and the
+            // label read; a change to signal strength or bandwidth keeps it the
+            // same and the controller coalesces the callback (versionCode 19).
+            NodeController.onEnvironmentChanged(
+                NetworkSignature.of(
+                    wifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI),
+                    cellular = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
+                    ethernet = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET),
+                    vpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN),
+                    validated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                )
+            )
         }
     }
 

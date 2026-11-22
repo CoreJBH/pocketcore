@@ -2,16 +2,12 @@ package com.corejbh.pocketcore.core
 
 import android.annotation.SuppressLint
 import android.content.SharedPreferences
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
 import java.security.InvalidKeyException
-import java.security.KeyStore
 import java.security.UnrecoverableKeyException
 import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
@@ -60,8 +56,10 @@ internal fun keyIsUnusable(error: Throwable?): Boolean = when (error) {
  * rest is not written to disk at all.
  *
  * One key serves every secret, so a failure is read at its own scope: a value
- * that cannot be decrypted is dropped entry by entry, and only a key the
- * Keystore itself reports as gone is replaced (see [keyIsUnusable]).
+ * that cannot be decrypted is dropped entry by entry, only a key the Keystore
+ * itself reports as gone is replaced (see [KeyLadder] and [keyIsUnusable]), and
+ * a Keystore that merely failed to answer leaves both the key and the stored
+ * value where they are for the next attempt.
  *
  * Every entry point takes [lock]. The store is reached from the UI thread, the
  * node's start path and the descriptor scan, and its key is shared: without the
@@ -69,8 +67,15 @@ internal fun keyIsUnusable(error: Throwable?): Boolean = when (error) {
  * an [ephemeral] value to a concurrent write. The operations are quick (one
  * Keystore call and one preference write), so a single lock costs nothing.
  *
- * Two properties the eighth review asked for:
+ * Properties the eighth and ninth reviews asked for:
  *
+ *  - a Keystore failure is read at its own scope (versionCode 19). Only a key the
+ *    Keystore reports as gone is replaced, and a Keystore that merely failed to
+ *    answer leaves the key and the stored ciphertext in place for the next
+ *    attempt. A value that cannot be decrypted at all is still dropped, and a
+ *    write the Keystore will not seal still leaves no ciphertext behind - a
+ *    stale value must never outlive the value it was replaced with - but neither
+ *    of those costs the shared key any more.
  *  - a write is **durable** when it returns. A secret here is what a daemon that
  *    is already running authenticates with and what the next start has to find
  *    again, so the preference write is [SharedPreferences.Editor.commit] rather
@@ -88,6 +93,9 @@ internal fun keyIsUnusable(error: Throwable?): Boolean = when (error) {
 internal class SecretStore(private val prefs: SharedPreferences) {
 
     private val lock = Any()
+
+    /** The shared key, generated on first use and replaced only when it is gone. */
+    private val keyLadder = KeyLadder(AndroidKeySource)
 
     /**
      * Secrets decrypted in this process, by key. Filled on the first [read] of a
@@ -109,17 +117,29 @@ internal class SecretStore(private val prefs: SharedPreferences) {
         decrypted[key]?.let { return@synchronized it }
         val encrypted = prefs.getString(encryptedKey(key), null)
         if (encrypted != null) {
-            val plain = decrypt(encrypted)
-            if (plain != null) {
-                decrypted[key] = plain
-                return@synchronized plain
+            when (val result = decrypt(encrypted)) {
+                is Decryption.Opened -> {
+                    decrypted[key] = result.plain
+                    return@synchronized result.plain
+                }
+                // This value alone cannot be read any more (damaged, or written
+                // under a key that is gone). It is dropped - and nothing else:
+                // the shared key keeps decrypting the other secrets, so one
+                // corrupt entry never costs the RPC password or the descriptor.
+                Decryption.Damaged -> {
+                    Log.w(TAG, "Stored secret '$key' could not be decrypted; that entry alone is discarded.")
+                    prefs.edit().remove(encryptedKey(key)).commit()
+                }
+                // The Keystore did not answer (a provider failure, a transient
+                // I/O error). The ciphertext is not known to be damaged, so it
+                // is kept and the next read tries the same key again: dropping
+                // it here would turn a passing Keystore hiccup into a lost
+                // descriptor.
+                Decryption.Unavailable -> Log.w(
+                    TAG,
+                    "Stored secret '$key' could not be read now; the entry is left for the next attempt."
+                )
             }
-            // This value alone cannot be read any more (damaged, or written
-            // under a key that is gone). It is dropped - and nothing else: the
-            // shared key keeps decrypting the other secrets, so one corrupt
-            // entry never costs the RPC password or the descriptor.
-            Log.w(TAG, "Stored secret '$key' could not be decrypted; that entry alone is discarded.")
-            prefs.edit().remove(encryptedKey(key)).commit()
         }
         ephemeral[key]?.let { return@synchronized it }
         // A value from a build before versionCode 9: plaintext in preferences.
@@ -169,15 +189,31 @@ internal class SecretStore(private val prefs: SharedPreferences) {
             .getOrNull()
     }
 
-    private fun decrypt(stored: String): String? {
-        if (!stored.startsWith(VERSION_PREFIX)) return null
+    /**
+     * One stored value, and whether the failure is the value's or the
+     * Keystore's.
+     *
+     * The distinction decides what happens to the ciphertext: a damaged value is
+     * dropped, while a Keystore that did not answer says nothing about this
+     * value and leaves it stored (versionCode 19).
+     */
+    private sealed interface Decryption {
+        class Opened(val plain: String) : Decryption
+        data object Damaged : Decryption
+        data object Unavailable : Decryption
+    }
+
+    private fun decrypt(stored: String): Decryption {
+        if (!stored.startsWith(VERSION_PREFIX)) return Decryption.Damaged
         val parts = stored.removePrefix(VERSION_PREFIX).split(':')
-        if (parts.size != 2) return null
-        val iv = runCatching { Base64.decode(parts[0], Base64.NO_WRAP) }.getOrNull() ?: return null
-        val ciphertext = runCatching { Base64.decode(parts[1], Base64.NO_WRAP) }.getOrNull() ?: return null
-        val key = usableKey() ?: return null
+        if (parts.size != 2) return Decryption.Damaged
+        val iv = runCatching { Base64.decode(parts[0], Base64.NO_WRAP) }.getOrNull()
+            ?: return Decryption.Damaged
+        val ciphertext = runCatching { Base64.decode(parts[1], Base64.NO_WRAP) }.getOrNull()
+            ?: return Decryption.Damaged
+        val key = usableKey() ?: return Decryption.Unavailable
         val first = runCatching { decryptWith(key, iv, ciphertext) }
-        first.getOrNull()?.let { return it }
+        first.getOrNull()?.let { return Decryption.Opened(it) }
         val error = first.exceptionOrNull()
         if (error is AEADBadTagException) {
             // The tag did not match for this value: it is damaged, or it was
@@ -185,12 +221,21 @@ internal class SecretStore(private val prefs: SharedPreferences) {
             // decrypts every other secret, so it is left alone and the caller
             // drops this one entry.
             Log.w(TAG, "A stored secret failed its authentication tag; that entry alone is discarded.")
-            return null
+            return Decryption.Damaged
         }
         Log.w(TAG, "Decryption failed (${error?.javaClass?.simpleName}): ${error?.message}")
-        if (!keyIsUnusable(error)) return null
-        val fresh = replaceKey() ?: return null
-        return runCatching { decryptWith(fresh, iv, ciphertext) }.getOrNull()
+        // A provider or transport failure: the key is kept, and so is the value.
+        if (!keyIsUnusable(error)) return Decryption.Unavailable
+        // The key was permanently invalidated, so nothing sealed under it can be
+        // read again. The key is replaced (which is what keeps encryption
+        // working), and this value - written by the key that is gone - stays
+        // unreadable and is dropped.
+        val fresh = replaceKey() ?: return Decryption.Unavailable
+        return runCatching { decryptWith(fresh, iv, ciphertext) }
+            .fold(
+                onSuccess = { Decryption.Opened(it) },
+                onFailure = { Decryption.Damaged }
+            )
     }
 
     private fun encryptWith(key: SecretKey, plain: String): String {
@@ -210,61 +255,19 @@ internal class SecretStore(private val prefs: SharedPreferences) {
     /**
      * The Keystore key, generated on first use.
      *
-     * A key entry the Keystore cannot read is unusable for anything - it would
-     * decrypt no existing secret either - so it is replaced, which is also the
-     * recovery for a key a lock screen change invalidated. This is the only
-     * place a key is deleted: a failed cipher operation on a single value never
-     * reaches it (see [decrypt]).
+     * The decision of when it may be replaced - and when a failure has to leave
+     * it alone - is [KeyLadder]'s, in one place, because a key deleted over a
+     * transient error takes every secret sealed under it.
      */
-    private fun usableKey(): SecretKey? {
-        val existing = runCatching { secretKey() }
-        existing.getOrNull()?.let { return it }
-        val error = existing.exceptionOrNull()
-        Log.w(TAG, "Keystore key is unusable (${error?.javaClass?.simpleName}): ${error?.message}")
-        return replaceKey()
-    }
+    private fun usableKey(): SecretKey? = keyLadder.usableKey()
 
     /** Removes the old key and builds a clean one in its place. */
-    private fun replaceKey(): SecretKey? {
-        if (!deleteKey()) return null
-        return runCatching { secretKey() }
-            .onFailure { Log.w(TAG, "Keystore unavailable: ${it.message}") }
-            .getOrNull()
-    }
-
-    private fun secretKey(): SecretKey {
-        val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-        // An entry that can no longer be read throws here; [usableKey] then
-        // drops it and calls this again, so a missing entry is generated below.
-        val existing = keyStore.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry
-        if (existing != null) return existing.secretKey
-        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE)
-        generator.init(
-            KeyGenParameterSpec.Builder(
-                ALIAS,
-                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-            )
-                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setKeySize(256)
-                .build()
-        )
-        return generator.generateKey()
-    }
-
-    /** Deletes the key entry so the next [secretKey] builds a clean one. */
-    private fun deleteKey(): Boolean = runCatching {
-        val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-        if (keyStore.containsAlias(ALIAS)) keyStore.deleteEntry(ALIAS)
-        true
-    }.getOrDefault(false)
+    private fun replaceKey(): SecretKey? = keyLadder.replaceKey()
 
     private fun encryptedKey(key: String): String = "$key$ENCRYPTED_SUFFIX"
 
     private companion object {
         const val TAG = "PocketCore"
-        const val KEYSTORE = "AndroidKeyStore"
-        const val ALIAS = "pocketcore-rpc-credentials"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val TAG_BITS = 128
         const val VERSION_PREFIX = "v1:"

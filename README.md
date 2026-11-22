@@ -123,11 +123,15 @@ Every figure on these screens is an RPC answer from the phone's own node.
   peer learns the phone's address. The switch also writes `listen=0` and
   `dnsseed=0`: the node then binds no clearnet inbound socket and asks no public
   DNS seed for peers, so neither the phone's address nor its seed lookups leave
-  in the clear. The node's own RPC stays on loopback and is never proxied.
+  in the clear. The node's own RPC stays on loopback and is never proxied; the
+  P2P port is not checked or moved either, because `listen=0` binds no P2P
+  socket.
 - **Checked before it runs.** The bundled daemon is hashed against the SHA-256
   the APK was built with before the first block is validated, and the build
   script verifies Bitcoin Core's signed `SHA256SUMS.asc` before it trusts any
-  checksum. The node directory and the settings are excluded from cloud backup
+  checksum. The same check gates the `-version` lookup, so the binary is not
+  executed at all - not even to print its version - until it matches this
+  build. The node directory and the settings are excluded from cloud backup
   and from device-to-device transfer.
 - **Local JSON-RPC, kept out of sight.** The daemon listens on `127.0.0.1` and
   authenticates this app only. The RPC pair is generated on the device, sealed
@@ -148,7 +152,10 @@ Every figure on these screens is an RPC answer from the phone's own node.
 - **Network selector.** Mainnet (default), Signet and Testnet4, each with its own
   data directory and ports.
 - **Background policy.** "Wi-Fi only" and "Charging only" pause the node (graceful
-  `stop` RPC) and start it again when the condition returns.
+  `stop` RPC) and start it again when the condition returns. The network
+  callback fires for signal strength and bandwidth as well, so a callback that
+  repeats the connectivity state the policy already saw is coalesced instead of
+  running another policy pass.
 - **Calm launch screen.** A 1.1 s midnight-navy splash: the tesseract mark
   settles once from 95% at full opacity, holds, and fades into the dashboard.
   The cyan halo behind the tile is one radial gradient drawn by the whole
@@ -263,8 +270,8 @@ to upgrade: that deletes `<app files>/node/data`, and the chain has to be
 validated again from the start. A build from another key would only install
 after an uninstall, and none has been published.
 
-The release APK is 17,216,155 bytes with SHA-256
-`872b8a6c406574ce15852ce0b1d895ffa08cb4b08f65f9e8f80b153379daabce`; the full
+The release APK is 8,487,559 bytes with SHA-256
+`69ff4838fbe2535ab0f179cc0e586b44b24c793d6fd83212e7170c51f05a05a9`; the full
 build record, including the bundled daemon's own hash, is in
 [docs/BUILD-RECORD.md](docs/BUILD-RECORD.md).
 

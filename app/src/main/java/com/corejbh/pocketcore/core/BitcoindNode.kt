@@ -408,20 +408,26 @@ class BitcoindNode(private val context: Context) {
      * The cached answer carries the build tag on its first line (see
      * [BUILD_TAG]): an updated app ships a possibly different daemon, and the
      * version of the previous one must not survive the update.
+     *
+     * A version that is not in the cache is read by executing the binary, so the
+     * same checksum check that gates a start gates this run (versionCode 19):
+     * [prepareBinary] runs first, and a binary that fails it is not executed at
+     * all - the answer is empty and the start path reports the problem.
      */
-    fun version(): String {
-        val cached = NodePaths.binaryVersionStamp(context)
-        if (cached.exists()) {
-            val lines = runCatching { cached.readLines() }.getOrDefault(emptyList())
-            if (lines.firstOrNull()?.trim() == BUILD_TAG) {
-                val text = lines.getOrNull(1)?.trim().orEmpty()
-                if (VersionProbe.isVersion(text)) return text
-            }
-            // Either an older build's entry or the daemon's error line instead
-            // of a version: it is no longer trusted.
-            runCatching { cached.delete() }
-        }
-        val detected = runCatching {
+    fun version(): String = BinaryVersion(
+        stamp = NodePaths.binaryVersionStamp(context),
+        buildTag = BUILD_TAG,
+        prepare = ::prepareBinary,
+        detect = ::detectVersion
+    ).read()
+
+    /**
+     * Runs `-version` on the extracted binary and returns the version it printed.
+     *
+     * Only reached through [version], after [prepareBinary] has verified the file.
+     */
+    private fun detectVersion(): String? =
+        runCatching {
             val builder = ProcessBuilder(
                 VersionProbe.command(binary.absolutePath, NodePaths.root(context))
             )
@@ -443,11 +449,6 @@ class BitcoindNode(private val context: Context) {
             }.getOrDefault("")
             if (!finished) null else VersionProbe.parse(output)
         }.getOrNull()
-        if (!detected.isNullOrBlank()) {
-            runCatching { cached.writeText("$BUILD_TAG\n$detected\n") }
-        }
-        return detected.orEmpty()
-    }
 
     /**
      * Last lines the daemon wrote to stdout/stderr.

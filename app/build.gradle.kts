@@ -94,6 +94,23 @@ android {
         applicationId = "com.corejbh.pocketcore"
         minSdk = 26
         targetSdk = 35
+        // versionCode 19: ninth security and state review. The bundled daemon is
+        // no longer executed for its version line before it has been verified:
+        // `version()` goes through prepareBinary() (existence, size, the build's
+        // SHA-256, the executable bit) exactly as a start does, so an APK whose
+        // libbitcoind.so was replaced runs nothing at all and the start path
+        // reports the problem instead. A Keystore failure is now read at its own
+        // scope: only a key the Keystore reports as gone (an invalidated or
+        // unreadable entry) is replaced, a transient provider failure leaves the
+        // key and the stored ciphertext in place, and a value that is merely
+        // unreadable right now is kept rather than dropped - one provider
+        // hiccup no longer costs the RPC password, the descriptor and the saved
+        // node settings together. With Tor routing on (`listen=0`) the P2P port
+        // and the loopback port above it are not probed, moved or reserved,
+        // because the daemon binds no P2P socket. Network callbacks are
+        // coalesced: a `onCapabilitiesChanged` that repeats the connectivity
+        // state the policy already saw is dropped instead of launching another
+        // policy pass that takes the node mutex.
         // versionCode 18: eighth security and state review. On Android 10+ the
         // RPC password is no longer sent to a port just because a daemon of the
         // app is alive and its conf names that port: the daemon's own debug.log
@@ -233,7 +250,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 18
+        versionCode = 19
         versionName = "1.0.0"
 
         // The hash of the bundled daemon, embedded for the integrity check in
