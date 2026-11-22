@@ -14,8 +14,8 @@ recorded at build time.
 | --- | --- |
 | Package | `com.corejbh.pocketcore` |
 | Version | 1.0.0 (versionCode 12) |
-| Release APK | `app-release.apk`, 8,467,759 bytes, SHA-256 `801c769fc654895b04087e95a30b2e6ddfa58e66281c7756f467f11444299ff7` |
-| Debug APK | `app-debug.apk`, 17,078,530 bytes, SHA-256 `af868d7df11c4c39993cb84ce5a1a5f2c89fa2b9a8b074f9f82be5ca628191db` |
+| Release APK | `app-release.apk`, 8,467,755 bytes, SHA-256 `1cc206d7a3d36579afe57284028cdd3a8c2a750f14e19fef67a4d36f5cf164bd` |
+| Debug APK | `app-debug.apk`, 17,078,530 bytes, SHA-256 `aff328bffa6badfc285a9c3123a32b27635a6711f3b9fc5680f200322185516a` |
 | Signing (release) | `keystore/pocketcore-release.jks`, alias `pocketcore`; v1 (JAR) signature off, v2 on; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` |
 | Daemon in the APK | `lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
 | Daemon hash in the app | `BuildConfig.BITCOIND_SHA256`, computed by Gradle from that file; `BitcoindNode.prepareBinary()` verifies the extracted copy before executing it |
