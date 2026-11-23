@@ -58,13 +58,25 @@ fun taskNeedsReleaseSignature(request: String): Boolean {
     )
 }
 
-if (!hasReleaseKeystore && gradle.startParameter.taskNames.any { taskNeedsReleaseSignature(it) }) {
+// A builder that signs the artifact with its own key - F-Droid builds
+// assembleRelease in a checkout that has no keystore and signs the APK it gets
+// with the F-Droid key - asks for an unsigned release artifact explicitly:
+// -Ppocketcore.unsignedRelease=true. Nothing infers it, the default stays
+// strict, and the debug key is still never used.
+val unsignedReleaseRequested =
+    providers.gradleProperty("pocketcore.unsignedRelease").orNull?.equals("true", ignoreCase = true) == true
+
+if (!hasReleaseKeystore && !unsignedReleaseRequested &&
+    gradle.startParameter.taskNames.any { taskNeedsReleaseSignature(it) }
+) {
     throw GradleException(
         "Release signing is not configured (missing: ${missingReleaseSigning.joinToString(", ")}). " +
             "Put storeFile, storePassword, keyAlias and keyPassword in " +
             "keystore/keystore.properties, or set POCKETCORE_KEYSTORE_FILE, " +
             "POCKETCORE_KEYSTORE_PASSWORD, POCKETCORE_KEY_ALIAS and POCKETCORE_KEY_PASSWORD. " +
-            "A release build is not produced unsigned, and never with the debug key."
+            "A release build is not produced unsigned, and never with the debug key; " +
+            "a builder that signs the artifact with its own key passes " +
+            "-Ppocketcore.unsignedRelease=true."
     )
 }
 
@@ -326,8 +338,9 @@ android {
             isMinifyEnabled = false
         }
         release {
-            // No fallback: an unsigned release is not produced (see the check at
-            // the top of this file).
+            // No fallback: an unsigned release is only written when the builder
+            // asked for it with -Ppocketcore.unsignedRelease=true (see the check
+            // at the top of this file).
             if (hasReleaseKeystore) {
                 signingConfig = signingConfigs.getByName("release")
             }
