@@ -86,16 +86,36 @@ if (!hasReleaseKeystore && !unsignedReleaseRequested &&
 // hash of what was built has to travel with the build: BitcoindNode hashes the
 // extracted file against this value before it runs it (versionCode 12). The
 // value is read here, from the same bytes the packaging step packs, so it cannot
-// disagree with the APK; a build without the daemon fails instead of producing
-// an app that refuses to start.
+// disagree with the APK; a packaging build without the daemon fails instead of
+// producing an app that refuses to start.
+//
+// The requirement is on the tasks that package the app, not on every
+// configuration: a source builder that deletes the binary and rebuilds it from
+// source in a step of its own (F-Droid's rm: and build:) runs `gradle clean`
+// before that step writes the file back.
+fun taskNeedsBundledDaemon(request: String): Boolean {
+    val task = request.substringAfterLast(':').lowercase()
+    val codeCheck = task.startsWith("lint") || task.startsWith("test") ||
+        task.startsWith("connected") || task.startsWith("dependencies") ||
+        task.startsWith("dependency") || task.startsWith("clean") ||
+        task == "tasks" || task == "help"
+    if (codeCheck) return false
+    return task.contains("assemble") || task.contains("bundle") ||
+        task.contains("package") || task.contains("install") || task == "build"
+}
+
 val bitcoindBinary = file("src/main/jniLibs/arm64-v8a/libbitcoind.so")
-val bitcoindSha256: String = run {
+if (gradle.startParameter.taskNames.any { taskNeedsBundledDaemon(it) }) {
     require(bitcoindBinary.isFile) {
         "Missing bundled daemon at ${bitcoindBinary.absolutePath}. " +
             "Run scripts/build-bitcoind-android.sh or restore app/src/main/jniLibs/arm64-v8a/libbitcoind.so."
     }
-    val digest = MessageDigest.getInstance("SHA-256").digest(bitcoindBinary.readBytes())
-    digest.joinToString("") { byte -> "%02x".format(byte) }
+}
+val bitcoindSha256: String = if (bitcoindBinary.isFile) {
+    MessageDigest.getInstance("SHA-256").digest(bitcoindBinary.readBytes())
+        .joinToString("") { byte -> "%02x".format(byte) }
+} else {
+    ""
 }
 
 android {
