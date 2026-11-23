@@ -1,0 +1,10 @@
+versionCode 21 - 1.0.0
+
+- The RPC user is sealed in the Android Keystore beside the password; the
+  plaintext value of earlier builds is migrated on first read.
+- Snapshot load, dump and UTXO scans re-check the node before and after they
+  run: a result that arrives after a stop or restart is reported as lost.
+- Imported and loaded snapshots must carry Bitcoin Core's own header before a
+  byte is copied.
+- Storage figures corrected: loading a snapshot needs about 13 GB free, a
+  pruned node about 14 GB, a full node about 890-900 GB.
