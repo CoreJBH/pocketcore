@@ -96,6 +96,25 @@ internal fun statusAfterTransientRpcFailure(status: NodeStatus, withinStartupGra
         else -> status
     }
 
+/**
+ * The sentence the NODE tab shows when the foreground service could not be
+ * started (versionCode 22).
+ *
+ * The foreground service is what keeps the daemon alive while the screen is
+ * off; without it Android may reclaim the process and the node stops without
+ * anyone having touched it. The refusal used to be a log line only, so the app
+ * looked protected while it was not. The exception is named in the text on
+ * purpose: it is what tells a later reader whether the start was refused for
+ * background execution (`ForegroundServiceStartNotAllowedException`, Android
+ * 12 and newer) or for a service that could not be created at all.
+ */
+internal fun serviceErrorMessage(error: Throwable): String {
+    val reason = error.message?.takeIf { it.isNotBlank() } ?: "no reason was given"
+    return "Android did not start the service that keeps the node running " +
+        "(${error.javaClass.simpleName}: $reason). The node can be stopped while this app is " +
+        "in the background: keep PocketCore open, allow its notifications, then press START again."
+}
+
 data class SnapshotModel(
     val path: String? = null,
     val label: String? = null,
@@ -161,7 +180,13 @@ data class NodeUiState(
     val effectiveRpcPort: Int = 0,
     val effectiveP2pPort: Int = 0,
     /** Set when a port was moved because something else held it. */
-    val portNote: String? = null
+    val portNote: String? = null,
+    /**
+     * Set when the foreground service could not be started: the node then runs
+     * without the thing that keeps Android from reclaiming it (versionCode 22).
+     * Cleared by a start that works and by a stop.
+     */
+    val serviceError: String? = null
 ) {
     val blocks: Long get() = blockchain?.blocks ?: 0L
     val headers: Long get() = blockchain?.headers ?: 0L
@@ -526,6 +551,7 @@ object NodeController {
                         uptimeSeconds = null,
                         rpcReachable = false,
                         pid = null,
+                        serviceError = null,
                         message = null
                     )
                 }
@@ -1455,7 +1481,10 @@ object NodeController {
      * `Uri` afterwards; both the dump and Core's `<path>.incomplete` are removed
      * when the export ends, whatever the outcome. The dump itself is minutes of
      * chainstate walking on a phone, so the stage is reported while it runs and
-     * the RPC poll is paused (see [refresh]) to keep Core free for the dump.
+     * the RPC poll is paused (see [refresh]) to keep Core free for the dump. The
+     * room the dump needs is read from the cache volume before the node is asked,
+     * and a phone without it gets the shortfall instead of a wasted dump
+     * (versionCode 22).
      */
     fun exportSnapshot(uri: android.net.Uri, displayName: String?) {
         scope.launch {
@@ -1466,6 +1495,26 @@ object NodeController {
                 val network = settings.state.value.network
                 val name = displayName?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
                     ?: "pocketcore-${network.chainArg}.dat"
+                // The daemon writes the dump into this app's cache, and the file is
+                // as large as the coin set it serializes - the chainstate, without
+                // the leveldb overhead. A phone without that room used to spend
+                // minutes walking the chainstate and then fail on the write, after
+                // the user had waited for it (versionCode 22). Checked before the
+                // node is asked, so the card reports the shortfall with the numbers
+                // instead of a progress line that cannot finish.
+                val chainstateBytes = NodePaths.chainstateBytes(appContext, network)
+                val cacheFree = NodePaths.freeSpaceBytes(appContext.cacheDir)
+                if (!StorageBudget.fitsExport(cacheFree, chainstateBytes)) {
+                    updateWithStateLock {
+                        it.copy(
+                            snapshotExport = SnapshotExportModel(
+                                fileName = name,
+                                error = StorageBudget.exportShortageMessage(chainstateBytes, cacheFree)
+                            )
+                        )
+                    }
+                    return@run
+                }
                 // The same sensitive gate every chainstate-walking request goes
                 // through (versionCode 21): a dump is minutes of the daemon's time on
                 // a chainstate, and it may only be sent to a port this app has proved
@@ -1819,6 +1868,7 @@ object NodeController {
                         rpcReachable = false,
                         pid = null,
                         portNote = null,
+                        serviceError = null,
                         effectiveRpcPort = settings.state.value.network.rpcPort,
                         effectiveP2pPort = settings.state.value.network.p2pPort,
                         message = when {
@@ -1876,8 +1926,18 @@ object NodeController {
         val intent = Intent(appContext, NodeService::class.java)
         runCatching {
             ContextCompat.startForegroundService(appContext, intent)
+        }.onSuccess {
+            // A start that worked retires the warning an earlier one left.
+            _state.update { it.copy(serviceError = null) }
         }.onFailure { error ->
+            // A refusal here means the node runs without the foreground service
+            // that keeps it alive: Android may reclaim the process while the
+            // screen is off, and the app used to say nothing about it (versionCode
+            // 22). Android 12+ refuses a start that comes from the background
+            // with ForegroundServiceStartNotAllowedException, which this reports
+            // like any other failure.
             Log.w(TAG, "Foreground service could not be started: ${error.message}")
+            _state.update { it.copy(serviceError = serviceErrorMessage(error)) }
         }
     }
 }

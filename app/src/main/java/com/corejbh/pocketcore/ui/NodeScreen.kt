@@ -107,6 +107,14 @@ fun NodeScreen(
             NoteBanner(note, PocketColors.Warning)
         }
 
+        // A node without its foreground service is still running, but Android may
+        // stop it as soon as the screen is off. Said here rather than in a log so
+        // the user knows what the app is not doing for them (versionCode 22).
+        state.serviceError?.let { error ->
+            SpacerH(10)
+            NoteBanner(error, PocketColors.Error)
+        }
+
         SpacerH(12)
         CardBox {
             Row(verticalAlignment = Alignment.CenterVertically) {

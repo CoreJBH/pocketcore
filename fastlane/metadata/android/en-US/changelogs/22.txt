@@ -1,0 +1,8 @@
+versionCode 22 - 1.0.0
+
+- Built for Android 16 (API level 36).
+- Exporting a UTXO snapshot now checks the free space before the dump
+  starts and says how much is missing, instead of failing after minutes.
+- If Android refuses the foreground service that keeps the node alive, the
+  NODE tab now says so, so a node that may be stopped in the background is
+  never mistaken for a protected one.

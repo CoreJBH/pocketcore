@@ -81,6 +81,50 @@ internal object StorageBudget {
         if (bytes > Long.MAX_VALUE - RESERVE_BYTES) Long.MAX_VALUE else bytes + RESERVE_BYTES
 
     /**
+     * Bytes that have to be free to dump the UTXO set into the app's cache.
+     *
+     * `dumptxoutset` writes the serialized UTXO set, and the chainstate it reads
+     * is the same coin set in Core's leveldb layout, which carries keys, indexes
+     * and per-entry overhead the serialized file does not. The chainstate's size
+     * is therefore an upper bound on the dump that is produced, and an exact
+     * figure needs no walk of the set to obtain (versionCode 22).
+     *
+     * The dump lands in the app's cache volume and is copied to the document the
+     * user picked afterwards, so the room for the copy is a second volume the
+     * export cannot measure; the copy reports its own failure if that one is
+     * full.
+     */
+    fun requiredExportBytes(chainstateBytes: Long): Long {
+        if (chainstateBytes <= 0L) return 0L
+        return withReserve(chainstateBytes)
+    }
+
+    /**
+     * True when [availableBytes] on the volume the daemon dumps into can hold the
+     * UTXO set.
+     *
+     * The same rules as [fits]: an unreadable free space is not a refusal, and an
+     * unknown chainstate size (a node that never ran) has nothing to compare.
+     */
+    fun fitsExport(availableBytes: Long, chainstateBytes: Long): Boolean {
+        if (availableBytes < 0L || chainstateBytes <= 0L) return true
+        return availableBytes >= requiredExportBytes(chainstateBytes)
+    }
+
+    /**
+     * The sentence the export card shows when the dump cannot fit: what it needs,
+     * what the phone has, and what has to be freed.
+     */
+    fun exportShortageMessage(chainstateBytes: Long, availableBytes: Long): String {
+        val need = requiredExportBytes(chainstateBytes)
+        val shortage = (need - availableBytes).coerceAtLeast(0L)
+        return "Not enough free space to export the UTXO set: the dump can be as large as the " +
+            "${humanBytes(chainstateBytes)} chainstate it is written from, so it needs " +
+            "${humanBytes(need)} free and the phone has ${humanBytes(availableBytes)}. " +
+            "Free up ${humanBytes(shortage)} and try again."
+    }
+
+    /**
      * True when [availableBytes] can hold [sourceBytes].
      *
      * [availableBytes] below zero is the unknown reading, and it is not a

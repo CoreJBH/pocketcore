@@ -2,6 +2,57 @@
 
 Recorded on 2026-11-21 while producing `pocketcore-1.0.0-debug.apk` (versionCode 9).
 
+## versionCode 22 — API 36 and two failures that said nothing
+
+Built on 2026-11-24 from `main`. The daemon is unchanged, byte for byte; the
+app moves to `compileSdk`/`targetSdk` 36 (Android 16), which needs AGP 8.11.1 and
+Gradle 8.13, and reports two things that used to fail in silence: a snapshot
+export with no room to write into, and a foreground service Android refused to
+start.
+
+| Item | Value |
+| --- | --- |
+| Package | `com.corejbh.pocketcore` |
+| Version | 1.0.0 (versionCode 22) |
+| Release bundle | `pocketcore-1.0.0-release.aab`, 10,046,288 bytes, SHA-256 `a2c5ae34dc17063d9813ad97e9ab958b52ea6b8ab277cccae9899cccf208b37a` |
+| Signing | `keystore/pocketcore-release.jks`, alias `pocketcore`; certificate SHA-256 `92:86:76:E8:A8:CA:DE:19:D9:F9:C7:68:4A:4E:32:44:C4:45:D3:4B:0A:9D:29:9E:AB:07:42:C4:F6:13:E3:9A` (unchanged; `jarsigner -verify` reports "jar verified") |
+| Daemon in the bundle | `base/lib/arm64-v8a/libbitcoind.so`, 10,729,904 bytes, SHA-256 `6becfe26657d216dc84161f9f9c0e4beb6f76634ed6f74d1a8330719a8c74f02` (unchanged) |
+| Native alignment | ELF `LOAD` segments `Align 0x4000` (16 KB pages) |
+| Toolchain | AGP 8.11.1, Gradle 8.13, build-tools 36.0.0, `platforms;android-36`, JDK 17, Kotlin 2.0.21 |
+| Lint | 0 errors, 23 warnings, 3 information in `lintDebug` and in `lintRelease` (`abortOnError = true`) |
+| Unit tests | 299 passing in `testDebugUnitTest` and in `testReleaseUnitTest` (293 before this build) |
+
+The release checklist was `:app:testDebugUnitTest :app:testReleaseUnitTest
+:app:lintDebug :app:lintRelease :app:bundleRelease`, all green, and
+`verify-english.py` reports nothing new (the Korean summary in `PRIVACY.md` is
+the one intended exception, unchanged since versionCode 12).
+
+### The findings
+
+**The API level.** `compileSdk` and `targetSdk` are 36. Nothing in the app
+changes behaviour for the level; what changes is what Play accepts. The
+versionCode 21 tree could not name 36 at all: AGP 8.7.3 was tested up to API 35
+and the platform was not installed.
+
+**An export with nowhere to write.** `dumptxoutset` wrote the snapshot into the
+app's cache and only failed on the write, minutes into walking the chainstate.
+`StorageBudget.fitsExport` now compares the free space on the volume the cache
+sits on (`NodePaths.freeSpaceBytes(dir)`) with the chainstate's own size - the
+same coin set in Core's heavier on-disk layout, so an upper bound on the dump -
+plus the 64 MB reserve, and the card reports what it needs, what the phone has
+and what to free instead of starting the dump. An unreadable `StatFs` and a node
+that never ran are still not refusals, the same rule the copy and the load
+follow.
+
+**A node that looked protected.** `NodeController.launchService()` swallowed a
+`startForegroundService` failure into a log line, so a node without the service
+that keeps Android from reclaiming the process looked exactly like a protected
+one. The failure now sets `NodeUiState.serviceError` (`serviceErrorMessage`),
+the NODE tab draws it as a warning banner, a start that works clears it and so
+does a stop. On Android 12 and newer the usual cause is a start from the
+background (`ForegroundServiceStartNotAllowedException`), and the sentence names
+the exception.
+
 ## versionCode 21 — the completeness review
 
 Built on 2026-11-23 from `main` at `5ff0442`. Five findings plus two documents:

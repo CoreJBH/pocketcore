@@ -112,8 +112,17 @@ object NodePaths {
         File(context.cacheDir, "utxo-${network.chainArg}-$stamp.dat")
 
     /** Bytes free on the volume that holds the chain, or -1 when unknown. */
-    fun freeSpaceBytes(context: Context): Long = runCatching {
-        android.os.StatFs(filesRoot(context).absolutePath).availableBytes
+    fun freeSpaceBytes(context: Context): Long = freeSpaceBytes(filesRoot(context))
+
+    /**
+     * Bytes free on the volume that holds [dir], or -1 when unknown.
+     *
+     * A snapshot dump is written into the cache directory, which is mounted with
+     * this app's data on a phone but is not what [freeSpaceBytes] measures; the
+     * export check reads the volume it actually writes to (versionCode 22).
+     */
+    fun freeSpaceBytes(dir: File): Long = runCatching {
+        android.os.StatFs(dir.absolutePath).availableBytes
     }.getOrDefault(-1L)
 
     /**

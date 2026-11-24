@@ -107,6 +107,42 @@ class StorageBudgetTest {
     }
 
     @Test
+    fun anExportNeedsRoomForTheChainstateItSerializes() {
+        // The dump is written into the app's cache before it is copied anywhere, and
+        // the chainstate it is written from is an upper bound on its size (the same
+        // coins with leveldb's keys and indexes on top). A phone that cannot hold
+        // that much would dump for minutes and then fail on the write
+        // (versionCode 22).
+        val chainstate = 13 * gib
+        assertEquals(13 * gib + StorageBudget.RESERVE_BYTES, StorageBudget.requiredExportBytes(chainstate))
+        assertFalse(StorageBudget.fitsExport(chainstate, chainstate))
+        assertTrue(StorageBudget.fitsExport(chainstate + StorageBudget.RESERVE_BYTES, chainstate))
+        assertFalse(StorageBudget.fitsExport(chainstate + StorageBudget.RESERVE_BYTES - 1, chainstate))
+    }
+
+    @Test
+    fun anExportIsNotRefusedByAFigureItCannotRead() {
+        // A StatFs that failed (-1) and a node that never ran (no chainstate to
+        // dump) are both "nothing to compare", never a refusal - the same rule the
+        // copy and the load follow.
+        assertTrue(StorageBudget.fitsExport(-1L, 13 * gib))
+        assertTrue(StorageBudget.fitsExport(0L, 0L))
+        assertTrue(StorageBudget.fitsExport(1 * gib, 0L))
+        assertEquals(0L, StorageBudget.requiredExportBytes(-1L))
+        assertEquals(Long.MAX_VALUE, StorageBudget.requiredExportBytes(Long.MAX_VALUE))
+    }
+
+    @Test
+    fun theExportMessageNamesTheShortfall() {
+        val message = StorageBudget.exportShortageMessage(13 * gib, 5 * gib)
+        assertTrue(message.startsWith("Not enough free space to export the UTXO set:"))
+        assertTrue(message.contains("13.0 GB chainstate it is written from"))
+        assertTrue(message.contains("needs 13.1 GB free"))
+        assertTrue(message.contains("the phone has 5.0 GB"))
+        assertTrue(message.contains("Free up 8.1 GB and try again."))
+    }
+
+    @Test
     fun bytesAreShownInTheUnitsTheRestOfTheAppUses() {
         assertEquals("0 B", StorageBudget.humanBytes(0L))
         assertEquals("512 B", StorageBudget.humanBytes(512L))

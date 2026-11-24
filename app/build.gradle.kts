@@ -120,12 +120,26 @@ val bitcoindSha256: String = if (bitcoindBinary.isFile) {
 
 android {
     namespace = "com.corejbh.pocketcore"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.corejbh.pocketcore"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
+        // versionCode 22: API 36 and two silent failures. compileSdk and targetSdk
+        // move to 36 (Android 16) with AGP 8.11.1 and Gradle 8.13, which is the
+        // level Google Play requires of an app bundle uploaded after 2026-08-31;
+        // no runtime behaviour is added by the level itself. Two places that
+        // failed without saying so now report: a snapshot export checks the free
+        // space on the volume the daemon dumps into before the dump starts, so a
+        // phone without room for the UTXO set says which figure it is short of
+        // instead of spending minutes on a dump that cannot be saved; and a
+        // foreground service that could not be started leaves a visible warning
+        // in the NODE tab, because a node the user believes is protected while the
+        // screen is off is worse than one that is openly unprotected. The second
+        // is what Android 12+ throws when a start comes from the background
+        // (ForegroundServiceStartNotAllowedException), which used to be a log line
+        // only.
         // versionCode 21: completeness review. The RPC user is sealed in the
         // Keystore store like the password (a plaintext value from an earlier
         // build is migrated on first read, so the stored node settings keep
@@ -321,7 +335,7 @@ android {
         // bitmap) and launcher art rebuilt inside the 66dp adaptive-icon safe zone.
         // versionCode 2: edge-to-edge insets fix, launch splash, colorized
         // status card, midnight-blue theme and the blue launcher icon.
-        versionCode = 21
+        versionCode = 22
         versionName = "1.0.0"
 
         // The hash of the bundled daemon, embedded for the integrity check in
