@@ -80,10 +80,7 @@ data class LivePulse(
     val events: List<PulseEvent> = emptyList(),
     /** When the sampler last wrote this snapshot (monotonic millis). */
     val updatedAt: Long = 0L
-) {
-    /** True once at least one sample has been taken. */
-    val hasSamples: Boolean get() = samples.isNotEmpty()
-}
+)
 
 /**
  * Turns successive byte counters into the rates and the curve the card shows.

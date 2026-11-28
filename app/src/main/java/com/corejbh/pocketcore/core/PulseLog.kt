@@ -234,11 +234,6 @@ class DebugLogTail(file: File? = null) {
     private var offset: Long = file?.length() ?: 0L
     private var carry = StringBuilder()
 
-    fun reset() {
-        offset = 0L
-        carry = StringBuilder()
-    }
-
     /** The complete lines that appeared since the previous call, in order. */
     fun readNew(): List<String> {
         val current = file ?: return emptyList()
