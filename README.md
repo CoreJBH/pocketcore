@@ -110,6 +110,18 @@ Every figure on these screens is an RPC answer from the phone's own node.
 - **Live dashboard from RPC.** Block height and header height, sync percentage,
   chain state, peers in/out, mempool transaction count and memory, pruned chain
   size and prune height, uptime, difficulty, subversion, best block hash.
+- **Live node pulse.** Between START / STOP and the peer card, `LIVE NODE PULSE`
+  shows what the node is doing right now: `IN` / `OUT` KB/s and the transaction
+  rate from `getnettotals` and the accepted-transaction lines in `debug.log`, a
+  one-second sparkline over the last minute, and the last four P2P messages the
+  daemon actually exchanged (`OK TX 9a4f..c812 · 248 B`, `<- INV peer · 12 new
+  tx`, `-> GET peer`, `<> PONG peer`). Those lines are Core's own, written while
+  the card is on screen: the app turns Core's `net` and `mempool` log categories
+  on with the `logging` RPC only while the NODE tab shows the card, and off
+  again when it does not, because a synced node writes several such lines a
+  second. Each peer row carries its own up/down rates and a dot that lights
+  while that peer is moving data. Sampling is one second while the tab is on
+  screen and slower otherwise.
 - **Peers with offline country flags.** Every connected peer is listed - all of
   them, not a first handful - each with its flag, `ip:port`, subversion,
   advertised services, ping and connection age, and one tap to disconnect or ban
@@ -245,6 +257,8 @@ app/src/main/java/com/corejbh/pocketcore/
     PortProbe.kt               free-port selection before the daemon starts
     SystemState.kt             Wi-Fi and charging checks
     HeaderSync.kt              header pre-sync percentage read from debug.log
+    LivePulse.kt               P2P rates, sliding window and the event log model
+    PulseLog.kt                debug.log P2P lines -> events; incremental tail
     ExplorerController.kt      block / transaction lookup, broadcast
     ExplorerModels.kt          block, header and transaction models
     RawTransaction.kt          signed hex normalisation before broadcast

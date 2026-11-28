@@ -18,6 +18,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.corejbh.pocketcore.core.LivePulse
 import com.corejbh.pocketcore.core.NodeController
 import com.corejbh.pocketcore.core.NodeStatus
 import com.corejbh.pocketcore.core.NodeUiState
@@ -42,6 +44,13 @@ fun NodeScreen(
 ) {
     var expandedPeer by remember { mutableStateOf<String?>(null) }
     var pendingBan by remember { mutableStateOf<PeerInfo?>(null) }
+
+    // The pulse is sampled once a second only while this tab is on screen; the
+    // controller slows it down when the card is in another tab.
+    DisposableEffect(Unit) {
+        NodeController.setPulseVisible(true)
+        onDispose { NodeController.setPulseVisible(false) }
+    }
 
     Column(
         Modifier
@@ -116,6 +125,9 @@ fun NodeScreen(
         }
 
         SpacerH(12)
+        LivePulseCard(state.pulse, state.status == NodeStatus.RUNNING)
+
+        SpacerH(12)
         CardBox {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SectionLabel("Peers (${state.peers.size})", Modifier.weight(1f))
@@ -138,6 +150,7 @@ fun NodeScreen(
                 state.peers.forEach { peer ->
                     PeerRow(
                         peer = peer,
+                        pulse = state.pulse,
                         expanded = expandedPeer == peer.address,
                         onToggle = { expandedPeer = if (expandedPeer == peer.address) null else peer.address },
                         onDisconnect = {
@@ -211,11 +224,14 @@ fun NodeScreen(
 @Composable
 private fun PeerRow(
     peer: PeerInfo,
+    pulse: LivePulse,
     expanded: Boolean,
     onToggle: () -> Unit,
     onDisconnect: () -> Unit,
     onBan: () -> Unit
 ) {
+    val peerPulse = pulse.peers[peer.nodeId]
+    val now = pulse.updatedAt
     Column(Modifier.fillMaxWidth()) {
         Row(
             Modifier
@@ -245,13 +261,21 @@ private fun PeerRow(
                 )
             }
             Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    text = if (peer.inbound) "IN" else "OUT",
-                    color = if (peer.inbound) PocketColors.Muted else PocketColors.Accent,
-                    fontSize = 8.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 0.8.sp
-                )
+                PeerPulseCell(peerPulse, now)
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (peer.inbound) "IN" else "OUT",
+                        color = if (peer.inbound) PocketColors.Muted else PocketColors.Accent,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 0.8.sp
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    PeerActivityDot(peerPulse, now)
+                }
                 SpacerH(2)
                 Text(
                     text = "${peer.pingMs.toInt()} ms",

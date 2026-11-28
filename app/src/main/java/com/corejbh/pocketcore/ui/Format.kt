@@ -34,6 +34,7 @@ fun formatBytes(bytes: Long): String {
 }
 
 fun formatDuration(seconds: Long): String {
+
     if (seconds <= 0) return "-"
     val days = seconds / 86_400
     val hours = (seconds % 86_400) / 3_600
@@ -106,3 +107,39 @@ fun formatFeeRate(btcPerKvB: Double): String {
     val sats = (btcPerKvB * 100_000.0).roundToLong()
     return "${formatCount(sats)} sat/vB"
 }
+
+/**
+ * A traffic rate with its unit, as the pulse card's summary line shows it:
+ * `15.3 KB/s`. Anything that is not a finite positive measurement is zero, so
+ * a missing sample reads as no traffic rather than as NaN.
+ */
+fun formatRate(bytesPerSecond: Double): String {
+    val bps = if (bytesPerSecond.isFinite() && bytesPerSecond > 0.0) bytesPerSecond else 0.0
+    return when {
+        bps >= MEBIBYTE -> String.format(Locale.US, "%.1f MB/s", bps / MEBIBYTE)
+        else -> String.format(Locale.US, "%.1f KB/s", bps / KIBIBYTE)
+    }
+}
+
+/**
+ * The same rate without the unit, for the narrow per-peer column: `4.2K`.
+ *
+ * Kept in the same units as [formatRate] so a peer's row and the card above it
+ * cannot disagree about what a K is.
+ */
+fun formatRateShort(bytesPerSecond: Double): String {
+    val bps = if (bytesPerSecond.isFinite() && bytesPerSecond > 0.0) bytesPerSecond else 0.0
+    return when {
+        bps >= MEBIBYTE -> String.format(Locale.US, "%.1fM", bps / MEBIBYTE)
+        else -> String.format(Locale.US, "%.1fK", bps / KIBIBYTE)
+    }
+}
+
+/** Accepted transactions a second, to one decimal: `1.4`. */
+fun formatTxRate(perSecond: Double): String {
+    val value = if (perSecond.isFinite() && perSecond > 0.0) perSecond else 0.0
+    return String.format(Locale.US, "%.1f", value)
+}
+
+private const val KIBIBYTE = 1024.0
+private const val MEBIBYTE = 1024.0 * 1024.0

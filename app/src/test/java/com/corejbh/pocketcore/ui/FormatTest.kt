@@ -56,4 +56,18 @@ class FormatTest {
         // The whole supply, 21 million BTC, in satoshis.
         assertEquals("2,100,000,000,000,000 sat", formatSats(2_100_000_000_000_000L))
     }
+
+    @Test
+    fun formatsPulseRates() {
+        assertEquals("15.3 KB/s", formatRate(15_667.0))
+        assertEquals("0.0 KB/s", formatRate(0.0))
+        assertEquals("1.5 MB/s", formatRate(1_572_864.0))
+        // A value that is not a measurement reads as no traffic, never NaN.
+        assertEquals("0.0 KB/s", formatRate(Double.NaN))
+        assertEquals("4.2K", formatRateShort(4_301.0))
+        assertEquals("0.0K", formatRateShort(0.0))
+        assertEquals("1.3M", formatRateShort(1_363_149.0))
+        assertEquals("2.4", formatTxRate(2.4))
+        assertEquals("0.0", formatTxRate(Double.POSITIVE_INFINITY))
+    }
 }

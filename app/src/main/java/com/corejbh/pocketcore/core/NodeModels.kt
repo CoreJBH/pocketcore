@@ -80,6 +80,28 @@ data class MempoolInfo(
     }
 }
 
+/**
+ * The daemon's own network byte counters, from `getnettotals`.
+ *
+ * The totals cover every socket the P2P layer has had since this daemon
+ * started, so a rate is a difference between two reads - never a number Core
+ * reports itself. [timeMillis] is the daemon's clock at the read, which is
+ * what makes a difference attributable to the moment it was taken.
+ */
+data class NetTotals(
+    val received: Long,
+    val sent: Long,
+    val timeMillis: Long
+) {
+    companion object {
+        fun from(json: JSONObject) = NetTotals(
+            received = json.optLong("totalbytesrecv"),
+            sent = json.optLong("totalbytessent"),
+            timeMillis = json.optLong("timemillis")
+        )
+    }
+}
+
 /** One connected peer from getpeerinfo. */
 data class PeerInfo(
     val nodeId: Int,

@@ -189,6 +189,17 @@ its text does (`NotificationCard.of` already produces a value that can be
 compared). Touchpoint: the poll delay in `NodeController.startPolling` and the
 `delay(900)` / `delay(2200)` pair.
 
+The NODE tab's pulse card adds a second sampler of its own:
+`getnettotals` and `getpeerinfo` once a second, plus an incremental read of the
+`debug.log` bytes written since the last sample. That is the price of a
+per-second card and is paid only while the tab is on screen - the controller
+falls back to one sample every five seconds otherwise, and the sampler only
+runs while the node is RUNNING. The log side is gated harder: the `net` and
+`mempool` categories the card's event lines come from are off by default in
+Core 32.1, and the app turns them on with the `logging` RPC only while the card
+is visible (and off again when the tab is left), so a phone in a pocket, with
+the app in the background, writes no verbose P2P log at all.
+
 **C. Sleep through Doze, and wake for the next block.** When the node is caught
 up, release the wake lock and schedule a periodic wake-up (`AlarmManager`
 `setAndAllowWhileIdle`, or a `WorkManager` periodic job) that refreshes the poll

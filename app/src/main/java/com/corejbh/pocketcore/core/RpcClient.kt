@@ -127,10 +127,36 @@ class RpcClient(
     suspend fun mempoolInfo(): MempoolInfo =
         MempoolInfo.from(call("getmempoolinfo").asObject())
 
+    /**
+     * The P2P layer's byte counters.
+     *
+     * Read once a second by the pulse sampler; the answer is two 64-bit values
+     * and the daemon's clock, so this is the cheapest call the app makes.
+     */
+    suspend fun netTotals(): NetTotals =
+        NetTotals.from(call("getnettotals").asObject())
+
     suspend fun peers(): List<PeerInfo> {
         val result = call("getpeerinfo") as? JSONArray ?: return emptyList()
         return PeerInfo.list(result)
     }
+
+    /**
+     * Turns log categories on (debug level) or off, at runtime.
+     *
+     * The NODE tab's pulse card reads `debug.log` for the P2P messages Core
+     * exchanges with peers (`net`) and for the transactions it accepts
+     * (`mempool`). Both are off by default in Core 32.1 and both are loud: a
+     * synced node with peers writes several lines a second, which no phone
+     * should spend on a card nobody is looking at. So the categories are asked
+     * for when the card is on screen and dropped when it is not - Core keeps
+     * writing for a while after it is asked, and that is the only cost left.
+     *
+     * The reply is Core's category table; a caller that gets an exception knows
+     * the change did not happen (see [NodeController.syncPulseLog]).
+     */
+    suspend fun setLogCategories(include: List<String>, exclude: List<String>): JSONObject =
+        call("logging", listOf(JSONArray(include), JSONArray(exclude))).asObject()
 
     suspend fun uptime(): Long = (call("uptime") as? Number)?.toLong() ?: 0L
 

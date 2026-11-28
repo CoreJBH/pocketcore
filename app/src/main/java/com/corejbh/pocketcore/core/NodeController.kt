@@ -2,6 +2,7 @@ package com.corejbh.pocketcore.core
 
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
@@ -186,7 +187,12 @@ data class NodeUiState(
      * without the thing that keeps Android from reclaiming it (versionCode 22).
      * Cleared by a start that works and by a stop.
      */
-    val serviceError: String? = null
+    val serviceError: String? = null,
+    /**
+     * What the NODE tab's pulse card draws: this daemon's own P2P traffic and
+     * its message log (see [PulseEngine]). Empty until the node runs.
+     */
+    val pulse: LivePulse = LivePulse()
 ) {
     val blocks: Long get() = blockchain?.blocks ?: 0L
     val headers: Long get() = blockchain?.headers ?: 0L
@@ -217,6 +223,24 @@ object NodeController {
 
     /** debug.log is read for header progress at most this often. */
     private const val HEADER_LOG_INTERVAL_MS = 4_000L
+
+    /** One pulse sample a second while the NODE tab is on screen. */
+    private const val PULSE_INTERVAL_MS = 1_000L
+
+    /** One sample every few seconds while that tab is not: enough to keep a shape. */
+    private const val PULSE_BACKGROUND_INTERVAL_MS = 5_000L
+
+    /** A step that took longer than its interval still yields to the next one. */
+    private const val MIN_PULSE_DELAY_MS = 50L
+
+    /**
+     * The log categories the pulse card reads: one line per P2P message, and one
+     * per transaction Core accepts. Both are off by default in Core 32.1.
+     */
+    private val PULSE_LOG_CATEGORIES = listOf("net", "mempool")
+
+    /** How long a failed log-category change waits before it is asked again. */
+    private const val PULSE_LOG_RETRY_MS = 15_000L
 
     /** Tail of debug.log searched for the newest header progress line. */
     private const val HEADER_LOG_LINES = 80
@@ -258,6 +282,33 @@ object NodeController {
     val state: StateFlow<NodeUiState> = _state.asStateFlow()
 
     private var pollJob: Job? = null
+    /**
+     * The one-second sampler behind the NODE tab's pulse card.
+     *
+     * It is separate from [pollJob] on purpose: the status cards change every
+     * couple of seconds and the pulse is a pulse, so the two loops have
+     * different cadences and neither should slow the other down.
+     */
+    private var pulseJob: Job? = null
+    private val pulseEngine = PulseEngine()
+    private val pulseParser = PulseLogParser()
+    private var pulseTail: DebugLogTail? = null
+    /** When the log-category change was last asked for, monotonic. */
+    private var pulseLogAttemptAt = 0L
+    /**
+     * Whether the NODE tab is on screen. A hidden card does not need one sample
+     * a second, so the sampler slows down rather than stops: the window keeps a
+     * coarse shape while the user is in another tab.
+     */
+    @Volatile private var pulseVisible = false
+    /**
+     * Whether the daemon's `net` / `mempool` log categories are on for this run.
+     *
+     * They are what the pulse card's event lines come from and they are only
+     * asked for while the card is on screen (see [syncPulseLog]); a new start
+     * begins with them off, because the daemon they belonged to is gone.
+     */
+    private var pulseLogOn = false
     // Read from the poll loop, the UI-side actions and the service, so a write
     // from one coroutine is visible to the next reader without a lock.
     @Volatile private var rpc: RpcClient? = null
@@ -552,7 +603,8 @@ object NodeController {
                         rpcReachable = false,
                         pid = null,
                         serviceError = null,
-                        message = null
+                        message = null,
+                        pulse = LivePulse()
                     )
                 }
             }
@@ -917,6 +969,7 @@ object NodeController {
         }
         _state.update { it.copy(pid = node.pid()) }
         startPolling()
+        startPulse(settings.state.value.network)
     }
 
     /** Suffix of a snapshot still being copied. */
@@ -929,6 +982,7 @@ object NodeController {
         Log.e(TAG, message)
         pollJob?.cancel()
         pollJob = null
+        stopPulse()
         settings.setShouldRun(false)
         _state.update {
             it.copy(
@@ -936,7 +990,8 @@ object NodeController {
                 detail = message,
                 rpcReachable = false,
                 pid = null,
-                message = message
+                message = message,
+                pulse = LivePulse()
             )
         }
         NodeService.stopService(appContext)
@@ -950,6 +1005,146 @@ object NodeController {
                 delay(if (_state.value.status == NodeStatus.STARTING) 900 else 2200)
             }
         }
+    }
+
+    /**
+     * The NODE tab tells the sampler whether its pulse card is on screen.
+     *
+     * Nothing else in the app draws a per-second figure, so a card in another
+     * tab is not worth two RPC calls and a log read every second; the sampler
+     * keeps running at a slower cadence instead of stopping, so the curve does
+     * not come back empty when the user returns to it. The daemon's verbose
+     * `net` / `mempool` log categories follow the same flag ([syncPulseLog]):
+     * they are on only while someone is watching the card.
+     */
+    fun setPulseVisible(visible: Boolean) {
+        pulseVisible = visible
+    }
+
+    /**
+     * Starts the one-second sampler behind the pulse card.
+     *
+     * Called for every start, before the daemon has answered its first RPC:
+     * the loop waits for RUNNING and for [clientAllowed] itself, so the first
+     * samples are taken as soon as the daemon can answer them. The log is
+     * attached from its end - lines an earlier run wrote are history, and the
+     * pulse is about what this node does now.
+     */
+    private fun startPulse(network: BitcoinNetwork) {
+        pulseJob?.cancel()
+        pulseEngine.reset()
+        pulseParser.reset()
+        pulseLogOn = false
+        pulseLogAttemptAt = 0L
+        pulseTail = DebugLogTail(NodePaths.debugLog(appContext, network))
+        _state.update { it.copy(pulse = LivePulse()) }
+        pulseJob = scope.launch {
+            while (isActive) {
+                val began = SystemClock.elapsedRealtime()
+                val generation = lifecycle.current()
+                if (_state.value.status == NodeStatus.RUNNING && isCurrent(generation)) {
+                    try {
+                        syncPulseLog()
+                        samplePulse(generation)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        // One failed sample is one missing second, not a reason
+                        // to end the pulse: the next one asks again.
+                        Log.w(TAG, "Pulse sample failed: ${error.message}")
+                    }
+                }
+                val interval = if (pulseVisible) PULSE_INTERVAL_MS else PULSE_BACKGROUND_INTERVAL_MS
+                val spent = SystemClock.elapsedRealtime() - began
+                delay((interval - spent).coerceIn(MIN_PULSE_DELAY_MS, interval))
+            }
+        }
+    }
+
+    private fun stopPulse() {
+        pulseJob?.cancel()
+        pulseJob = null
+    }
+
+    /**
+     * Keeps the daemon's `net` / `mempool` log categories in step with the card.
+     *
+     * The card's event lines exist only in those categories and those lines are
+     * the loudest thing Core can be asked to write, so they are on exactly while
+     * the NODE tab shows the card: the visibility flag says when the user is
+     * looking, Core says when the node can answer. Turning them off also drops
+     * the lines already shown, so a return to the tab starts a live log instead
+     * of presenting a minute-old one as news.
+     *
+     * A failed change is retried after [PULSE_LOG_RETRY_MS] and never spins: the
+     * call is an ordinary RPC, and one that fails is one the next second will
+     * repeat anyway.
+     */
+    private suspend fun syncPulseLog() {
+        val want = pulseVisible
+        if (want == pulseLogOn) return
+        val now = SystemClock.elapsedRealtime()
+        if (pulseLogAttemptAt != 0L && now - pulseLogAttemptAt < PULSE_LOG_RETRY_MS) return
+        pulseLogAttemptAt = now
+        val client = rpc?.takeIf {
+            clientAllowed(_state.value.status, listenerVerified, node.isAlive())
+        } ?: return
+        val changed = runCatching {
+            if (want) {
+                client.setLogCategories(include = PULSE_LOG_CATEGORIES, exclude = emptyList())
+            } else {
+                client.setLogCategories(include = emptyList(), exclude = PULSE_LOG_CATEGORIES)
+            }
+        }.isSuccess
+        if (!changed) return
+        pulseLogOn = want
+        if (!want) pulseEngine.clearEvents()
+    }
+
+    /**
+     * One pulse sample: the daemon's byte totals, its peers, and the P2P lines
+     * it wrote since the previous sample.
+     *
+     * The totals and the peer list come from two RPC calls that may each fail
+     * on a phone busy with a block; a missing one is passed as null and the
+     * engine keeps what it measured before rather than reporting a zero it did
+     * not see. The log read never fails in a way that matters: no lines is an
+     * idle node, not an error.
+     */
+    private suspend fun samplePulse(generation: Long) {
+        // A snapshot export holds Core while it walks the chainstate; a pulse
+        // sample would queue behind it and time out, which is not news about
+        // the network. The card keeps its last curve until the export ends.
+        if (_state.value.snapshotExport.busy) return
+        val client = rpc?.takeIf {
+            clientAllowed(_state.value.status, listenerVerified, node.isAlive())
+        } ?: return
+        val totals = pulseCall { client.netTotals() }
+        val peers = pulseCall { client.peers() }
+        if (totals == null && peers == null) return
+        val at = SystemClock.elapsedRealtime()
+        val addresses = peers?.associate { it.nodeId to it.address }.orEmpty()
+        val pings = peers?.filter { it.pingMs > 0.0 }?.associate { it.nodeId to it.pingMs }.orEmpty()
+        val events = pulseParser.parse(pulseTail?.readNew().orEmpty(), at).map { event ->
+            event.copy(
+                peerAddress = addresses[event.peerId] ?: event.peerAddress,
+                // The round trip Core measured for that peer, shown on the
+                // accepted-transaction and pong lines. Never a number made up
+                // per message: the log stamps whole seconds.
+                pingMs = pings[event.peerId] ?: event.pingMs
+            )
+        }
+        val pulse = pulseEngine.update(at, totals, peers, events)
+        updateIfCurrent(generation) { it.copy(pulse = pulse) }
+    }
+
+    /** One pulse RPC call, with a transient failure reported as null. */
+    private suspend fun <T> pulseCall(block: suspend () -> T): T? = try {
+        block()
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        null
     }
 
     private suspend fun refresh() {
@@ -1255,6 +1450,7 @@ object NodeController {
         lifecycle.next()
         pollJob?.cancel()
         pollJob = null
+        stopPulse()
         if (!node.isAlive()) {
             node.destroy()
             rpc = null
